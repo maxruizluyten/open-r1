@@ -31,6 +31,7 @@ class TestRewards(unittest.TestCase):
         formats = [
             "<think>Some reasoning</think><answer>The answer</answer>",
             "Some reasoning</think><answer>The answer</answer>",
+            "<think><think>Some reasoning</think><answer>The answer</answer>",
         ]
         for fmt in formats:
             completion = [[{"content": fmt}]]
