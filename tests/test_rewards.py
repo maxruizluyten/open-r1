@@ -165,7 +165,7 @@ class TestRepetitionPenaltyReward(unittest.TestCase):
         completions = [[{"content": "this is a this is a test"}]]
 
         rewards = reward_fn(completions)
-        self.assertAlmostEqual(rewards[0],  -0.8571428, places=4)
+        self.assertAlmostEqual(rewards[0], -0.8571428, places=4)
 
     def test_mixed_case(self):
         reward_fn = get_repetition_penalty_reward(ngram_size=2, max_penalty=-1.0)
