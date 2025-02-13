@@ -2,8 +2,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:8
 #SBATCH --partition=hopper-prod
-#SBATCH --output=./logs/%x-%j.out
-#SBATCH --err=./logs/%x-%j.err
+#SBATCH --output=/fsx/open-r1/logs/%x-%j.out
+#SBATCH --err=/fsx/open-r1//logs/%x-%j.err
 #SBATCH --requeue
 
 # Specific configuration optimized for the Hugging Face Compute Cluster
@@ -22,6 +22,8 @@ MODEL_REVISION=$4
 # Optional args
 [ -z "$5"] && TENSOR_PARALLEL=False || TENSOR_PARALLEL=$5
 [ -z "$6"] && TRUST_REMOTE_CODE=False || TRUST_REMOTE_CODE=$6
+[ -z "$7"] && MAX_MODEL_LENGTH=32768 || MAX_MODEL_LENGTH=$7
+
 # $7 is reserved for system_prompt, see line 51
 NUM_GPUS=$(nvidia-smi -L | wc -l)
 
@@ -29,9 +31,9 @@ NUM_GPUS=$(nvidia-smi -L | wc -l)
 if [ "$TENSOR_PARALLEL" = "True" ]; then
     # use TP to shard model across NUM_GPUS
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
-    MODEL_ARGS="pretrained=$MODEL_ID,revision=$MODEL_REVISION,trust_remote_code=$TRUST_REMOTE_CODE,dtype=bfloat16,tensor_parallel_size=$NUM_GPUS,max_model_length=32768,gpu_memory_utilisation=0.8"
+    MODEL_ARGS="pretrained=$MODEL_ID,revision=$MODEL_REVISION,trust_remote_code=$TRUST_REMOTE_CODE,dtype=bfloat16,tensor_parallel_size=$NUM_GPUS,max_model_length=$MAX_MODEL_LENGTH,gpu_memory_utilisation=0.8"
 else
-    MODEL_ARGS="pretrained=$MODEL_ID,revision=$MODEL_REVISION,trust_remote_code=$TRUST_REMOTE_CODE,dtype=bfloat16,data_parallel_size=$NUM_GPUS,max_model_length=32768,gpu_memory_utilisation=0.8"
+    MODEL_ARGS="pretrained=$MODEL_ID,revision=$MODEL_REVISION,trust_remote_code=$TRUST_REMOTE_CODE,dtype=bfloat16,data_parallel_size=$NUM_GPUS,max_model_length=$MAX_MODEL_LENGTH,gpu_memory_utilisation=0.8"
 fi
 
 LM_EVAL_REPO_ID="open-r1/open-r1-eval-leaderboard"
@@ -53,13 +55,13 @@ if [[ $TASKS == *"custom"* ]]; then
     --use-chat-template \
     --output-dir $OUTPUT_DIR \
     --save-details \
-    ${7:+--system-prompt "$7"}
+    ${8:+--system-prompt "$8"}
 else
     lighteval vllm $MODEL_ARGS $TASKS \
     --use-chat-template \
     --output-dir $OUTPUT_DIR \
     --save-details \
-    ${7:+--system-prompt "$7"}
+    ${8:+--system-prompt "$8"}
 fi
 
 OUTPUT_FILEPATHS=$(find $OUTPUT_DIR/results/ -type f \( -name "*.json" \))
@@ -81,7 +83,7 @@ echo "Uploading details to Hugging Face Hub..."
 DETAILS_FILEPATHS=$(find $OUTPUT_DIR/details/ -type f \( -name "*.parquet" \))
 echo "DETAILS_FILEPATHS: $DETAILS_FILEPATHS"
 TIMESTAMP=$(date +"%Y-%m-%dT%H-%M-%S")
-python src/open_r1/utils/upload_details.py --data_files $DETAILS_FILEPATHS --hub_repo_id $DETAILS_REPO_ID --config_name $MODEL_REVISION.$TASK_NAME.$TIMESTAMP
+python scripts/upload_details.py --data_files $DETAILS_FILEPATHS --hub_repo_id $DETAILS_REPO_ID --config_name $MODEL_REVISION.$TASK_NAME.$TIMESTAMP
     
 echo "Cleaning up ..."
 rm -rf $OUTPUT_DIR
