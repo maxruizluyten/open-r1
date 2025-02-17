@@ -1,59 +1,40 @@
 
+from multiprocessing import reduction
 from transformers import Trainer
-from trl import SFTTrainer
+from open_r1.async_grpo.remote_model import RemoteModel
 import trl
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Union
 from datasets import Dataset
 from torch.utils.data import DataLoader
 import torch
-from torch import Value, nn
 from transformers import (
-    BaseImageProcessor,
     DataCollatorWithPadding,
-    FeatureExtractionMixin,
-    GenerationConfig,
     PreTrainedTokenizerBase,
-    ProcessorMixin,
     Trainer,
     TrainerCallback,
     TrainerControl,
     is_wandb_available,
     TrainerState,
 )
-import gc
 import math
 import os
-import textwrap
-import time
-from collections import defaultdict
 from typing import Callable, Optional, Union
-import requests
-import numpy as np
-import pandas as pd
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from accelerate import Accelerator
-from accelerate.utils import broadcast, gather_object
 from datasets import Dataset
 from torch.utils.data import DataLoader
 from transformers import (
-    BaseImageProcessor,
     DataCollatorWithPadding,
-    FeatureExtractionMixin,
-    GenerationConfig,
     PreTrainedTokenizerBase,
-    ProcessorMixin,
     Trainer,
     TrainerCallback,
     TrainerControl,
     is_wandb_available,
 )
-
+from trl.trainer.utils import pad, selective_log_softmax
 from transformers import (
     AutoModelForCausalLM,
-    AutoModelForSequenceClassification,
     AutoTokenizer,
     GenerationConfig,
     PreTrainedModel,
@@ -62,7 +43,7 @@ from transformers import (
     TrainerCallback,
     is_wandb_available,
 )
-
+from trl.data_utils import maybe_apply_chat_template, is_conversational
 from transformers.integrations import get_reporting_integration_callbacks
 from transformers.trainer import DEFAULT_CALLBACKS, DEFAULT_PROGRESS_CALLBACK
 from transformers.trainer_callback import CallbackHandler, ExportableState, PrinterCallback
@@ -110,37 +91,17 @@ class AsyncGRPOConfig(trl.GRPOConfig):
     )
     
     remote_gen_model_url: str = field(
-        default=None,
+        default="0.0.0.0",
     )
     remote_ref_model_url: str = field(
-        default=None,
+        default="0.0.0.0",
     )
-    
-class RemoteModel():
-    def __init__(self, remote_model_url, stop_token_id=None):
-        self.remote_model_url = remote_model_url
-        self.stop_token_id
-        
-    def generate(self, input_ids: list[list[int]], max_new_tokens=256, temperature=0.8):
-            # Prepare the request body
-            request_body = {
-                    "input_ids": input_ids,
-                    "sampling_params": {
-                        "temperature": temperature,
-                        "max_new_tokens": max_new_tokens,
-                        "stop_token_ids": [self.stop_token_id],
-                    },
-                    "stream": False,
-                    "return_logprob": True,
-                    "logprob_start_len": 0,
-            }
-
-            # Send the POST request to the server
-            # add a few retries?
-            response = requests.post(f"http://{HOST_URL}:30010/generate", json=request_body)
-    
-    def load_weights_from_path(path:str):
-        pass
+    remote_gen_model_port: str = field(
+        default="30010",
+    )
+    remote_ref_model_port: str = field(
+        default="30010",
+    )
 
 class AsyncGRPOTrainer(Trainer):
     _tag_names = ["trl", "async_grpo"]
@@ -157,6 +118,19 @@ class AsyncGRPOTrainer(Trainer):
                 ) -> None:
         
         self.args = args
+        self.reward_funcs = reward_funcs
+        # Reward weights (move this logic to post_init of config?)
+        if args.reward_weights is not None:
+            if len(args.reward_weights) != len(reward_funcs):
+                raise ValueError(
+                    f"Number of reward weights ({len(args.reward_weights)}) must match number of reward "
+                    f"functions ({len(reward_funcs)})"
+                )
+            self.reward_weights = args.reward_weights
+        else:
+            self.reward_weights = [1.0] * len(reward_funcs),
+        
+        
         # Trained model
         model_init_kwargs = args.model_init_kwargs or {}
         if isinstance(model, str):
@@ -183,6 +157,13 @@ class AsyncGRPOTrainer(Trainer):
         if processing_class is None:
             processing_class = AutoTokenizer.from_pretrained(model.config._name_or_path, padding_side="left")
         self.processing_class = processing_class
+        
+        
+        self.remote_gen_model = RemoteModel(args.remote_gen_model_url, args.remote_gen_model_port, self.processing_class.eos_token_id)
+        self.remote_ref_model = RemoteModel(args.remote_ref_model_url, args.remote_ref_model_port, self.processing_class.eos_token_id)
+        
+        
+        
         self.train_dataset = train_dataset
         
         if data_collator is not None:
@@ -247,10 +228,86 @@ class AsyncGRPOTrainer(Trainer):
             batch_size=local_dataloader_batch_size,
             shuffle=True,
             collate_fn=self.data_collator,
-            drop_last=True,  # needed; otherwise the last batch will be of ragged shape
+            drop_last=True,
         )
         torch.manual_seed(args.seed)
         self.model, self.optimizer, self.dataloader = self.accelerator.prepare(self.model, self.optimizer, self.dataloader)
+
+
+    def prepare_batch(self, batch):
+        """
+        This will:
+        - generate k samples for each problem
+        - compute ref logprobs for each generation
+        - using internal reward model(s) to get rewards
+        """
+        prompts = [x["prompt"] for x in batch]
+        prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in batch]
+        prompt_inputs = self.processing_class(prompts_text)
+        generations = self.remote_gen_model.generate(prompt_inputs["input_ids"],
+                                                     max_new_tokens=self.args.max_completion_length,
+                                                     num_generations=self.args.num_generations,
+                                                     )
+        prompt_completion_ids = [example["prompt_ids"] + example["completion_ids"] for example in generations]
+        
+        # generate for 1 step to get the log_probs
+        ref_generations = self.remote_ref_model.generate(prompt_completion_ids, max_new_tokens=1, num_generations=1)
+        
+        gen_log_probs = [example["prompt_log_probs"] + example["completion_log_probs"] for example in generations]
+        # drop last as we generated 1 extra token
+        ref_log_probs = [example["prompt_log_probs"] + example["completion_log_probs"][:-1] for example in ref_generations]
+        
+        # calculate the rewards, assume each RF maps string problem, completion -> reward for now
+        # repeat the problems
+        repeated_prompts = []
+        for prompt in prompts:
+            repeated_prompts.extend([prompt]*self.args.num_generations)
+        
+        completions_text = self.processing_class.batch_decode([example["completion_ids"] for example in generations])
+        if is_conversational(batch[0]):
+            completions = []
+            for prompt, completion in zip(repeated_prompts, completions_text):
+                bootstrap = prompt.pop()["content"] if prompt[-1]["role"] == "assistant" else ""
+                completions.append([{"role": "assistant", "content": bootstrap + completion}])
+        else:
+            completions = completions_text
+        rewards = torch.zeros(len(completions), len(self.reward_funcs))
+        reward_kwargs = {} # TODO: add this 
+        for i, reward_func in enumerate(self.reward_funcs):
+            keys = [key for key in batch[0] if key not in ["prompt", "completion"]]
+            reward_kwargs = {key: [] for key in keys} # or use defaultdict
+            for example in batch:
+                for key in keys:
+                    reward_kwargs[key].extend([example[key]]*self.args.num_generations)
+            output_rewards = reward_func(prompts=repeated_prompts, completions=completions, **reward_kwargs)
+            rewards[:, i] = torch.Tensor(output_rewards) * self.reward_weights[i]
+            # TODO: log the rewards
+        
+        # calculate the advantages
+        grouped_rewards = rewards.sum(-1).view(len(prompts), self.args.num_generations)
+        EPS = 1e-4
+        grouped_advantages = (grouped_rewards - grouped_rewards.mean(-1, keepdim=True)) /  (grouped_rewards.std(-1, keepdim=True) + EPS)
+        advantages = grouped_advantages.flatten().tolist()
+        
+        # build batch as list of dicts
+        examples = []
+        for i, prompt in enumerate(repeated_prompts):
+            example = {
+                "prompt": prompt,
+                "prompt_ids": prompt_inputs["input_ids"][i // self.args.num_generations],
+                "completion": completions[i],
+                "completion_ids": generations[i]["completion_ids"],
+                "prompt_completion_ids": prompt_completion_ids[i],
+                "gen_log_probs": gen_log_probs[i], # may be used for clipping in future version
+                "ref_log_probs": ref_log_probs[i],
+                "advantages": advantages[i], 
+                "rewards": rewards[i]
+            }
+            examples.append(example)
+        
+        return examples
+        
+        
 
     def train(self,         
             resume_from_checkpoint: Optional[Union[str, bool]] = None,
@@ -279,17 +336,71 @@ class AsyncGRPOTrainer(Trainer):
         self.model.train()
         for step in range(start_step, self.total_steps_per_device + 1):
             batch = next(iter_dataloader)
-            print(batch)
             
-            # generation
+            batch = self.prepare_batch(batch)
+            # TODO: log completions, rewards, etc
+            gen_dataset = Dataset.from_list(batch)
             
+            @torch.no_grad()
+            def mini_batch_collator(examples):
+                all_prompt_completion_ids = [torch.LongTensor(example["prompt_completion_ids"]) for example in examples]
+                padded_prompt_completion_ids = pad(all_prompt_completion_ids)
+                gen_log_probs = [torch.Tensor(example["gen_log_probs"][1:]) for example in examples]
+                ref_log_probs = [torch.Tensor(example["ref_log_probs"][1:]) for example in examples]
+                
+                completion_mask = torch.zeros_like(padded_prompt_completion_ids, dtype=torch.float32)
+                for i, example in enumerate(examples):
+                    prompt_ids = example["prompt_ids"]
+                    prompt_completion_ids = example["prompt_completion_ids"]
+                    # mask for the loss computation
+                    completion_mask[i,:len(prompt_completion_ids)] += 1.0
+                    completion_mask[i,:len(prompt_ids)] *= 0.0
+                    
+                advantages = torch.Tensor([example["advantages"] for example in examples])
+                
+                device = self.model.device
+                
+                return {
+                    "padded_prompt_completion_ids": padded_prompt_completion_ids.to(device),
+                    "padded_gen_log_probs": pad(gen_log_probs).to(device),
+                    "padded_ref_log_probs": pad(ref_log_probs).to(device),
+                    "completion_mask": completion_mask.to(device),
+                    "advantages": advantages.to(device), 
+                }
+
             
-            
+            gen_dataloader = DataLoader(
+                gen_dataset,
+                batch_size=self.args.per_device_train_batch_size,
+                shuffle=True,
+                drop_last=True,
+                collate_fn=mini_batch_collator
+            )
             # optimization
-            for mini_batch in batch:
-                pass
-            
-            
+            for mini_batch in gen_dataloader:
+                with self.accelerator.accumulate(self.model):
+                    # optimization step, attn mask not needed as we are right padded
+                    logits = self.model(input_ids=mini_batch["padded_prompt_completion_ids"]).logits
+                    logits = logits[:, :-1, :]
+                     # drop first label as there is no logit predicted for it
+                    labels = mini_batch["padded_prompt_completion_ids"][:, 1:]
+                    log_probs = selective_log_softmax(logits, labels)
+                    ref_log_probs = mini_batch["padded_ref_log_probs"]
+                    gen_log_probs = mini_batch["padded_gen_log_probs"]
+                    
+                    assert log_probs.shape == ref_log_probs.shape
+                    # TODO: we can just use the gen_log_probs here and truncate the logprobs to just the outputs
+                    per_token_kl = torch.exp(ref_log_probs - log_probs) - (ref_log_probs - log_probs) - 1
+                    advantages = mini_batch["advantages"]
+                    per_token_loss = torch.exp(log_probs - gen_log_probs.detach()) * advantages.unsqueeze(-1)
+                    
+                    per_token_loss = -(per_token_loss - self.args.beta * per_token_kl)
+                    completion_mask = mini_batch["completion_mask"]
+                    loss = (per_token_loss * completion_mask[:,1:]).sum() / completion_mask.sum()
+                    self.accelerator.backward(loss)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+
             # maybe weight sync
             
             
@@ -319,7 +430,3 @@ class AsyncGRPOTrainer(Trainer):
             self._save_checkpoint(self.model, trial=None, metrics=None)
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
                 
-if __name__ == "__main__":
-    url = ""
-    remote_model = RemoteModel(url, stop_token_id)
-    
