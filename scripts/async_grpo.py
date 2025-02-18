@@ -240,7 +240,6 @@ def main(script_args, training_args, model_args):
         trainer.model.config.use_cache = True
         trainer.model.config.save_pretrained(training_args.output_dir)
 
-
     #############
     # push to hub
     #############

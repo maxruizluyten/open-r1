@@ -327,6 +327,9 @@ class AsyncGRPOTrainer(Trainer):
                 self.state.save_steps = self.args.save_steps
                 
         self.control = self.callback_handler.on_train_begin(self.args, self.state, self.control)
+        self.state.global_step = 0
+        self.state.max_steps = self.total_steps_per_device
+        self.state.num_train_epochs = self.args.num_train_epochs
         
         def repeat_generator():
             while True:
@@ -377,6 +380,10 @@ class AsyncGRPOTrainer(Trainer):
                 collate_fn=mini_batch_collator
             )
             # optimization
+            # stats for logging
+            losses = []
+            
+            
             for mini_batch in gen_dataloader:
                 with self.accelerator.accumulate(self.model):
                     # optimization step, attn mask not needed as we are right padded
@@ -397,6 +404,7 @@ class AsyncGRPOTrainer(Trainer):
                     per_token_loss = -(per_token_loss - self.args.beta * per_token_kl)
                     completion_mask = mini_batch["completion_mask"]
                     loss = (per_token_loss * completion_mask[:,1:]).sum() / completion_mask.sum()
+                    losses.append(loss.item())
                     self.accelerator.backward(loss)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
@@ -407,18 +415,16 @@ class AsyncGRPOTrainer(Trainer):
             
             
             # logging stats
+            device = self.model.device
             metrics = {}
             metrics["lr"] = self.lr_scheduler.get_last_lr()[0]
-            
+            metrics["loss"] = self.accelerator.gather_for_metrics(torch.Tensor(losses).to(device)).mean().item()
             self.state.epoch = step / self.total_steps_per_device
             self.log(metrics)
             
             
             self.lr_scheduler.step()
             self.state.global_step += 1
-            
-            
-            
             
             self.control = self.callback_handler.on_step_end(self.args, self.state, self.control)
             if self.control.should_save:
