@@ -51,5 +51,5 @@ save_strategy: "steps"
 save_steps: 200
 save_total_limit: 1
 seed: 42
-use_liger: false # Bug in TRL 
+use_liger: false # Bug in TRL when true
 warmup_ratio: 0.05
