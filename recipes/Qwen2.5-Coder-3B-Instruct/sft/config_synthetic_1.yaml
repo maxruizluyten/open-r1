@@ -8,7 +8,7 @@ attn_implementation: flash_attention_2
 dataset_name: PrimeIntellect/SYNTHETIC-1-SFT-Data
 dataset_configs:
 - all
-dataset_num_proc: 48
+dataset_num_proc: 8
 
 # SFT trainer config
 callbacks:
@@ -52,6 +52,4 @@ save_steps: 200
 save_total_limit: 1
 seed: 42
 use_liger: true
-wandb_entity: huggingface
-wandb_project: open-r1
 warmup_ratio: 0.05
