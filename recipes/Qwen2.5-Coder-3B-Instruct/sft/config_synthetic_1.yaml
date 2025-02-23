@@ -36,7 +36,7 @@ logging_strategy: steps
 lr_scheduler_type: cosine_with_min_lr
 lr_scheduler_kwargs:
   min_lr_rate: 0.1
-packing: true
+packing: false
 max_seq_length: 32768
 max_steps: -1
 num_train_epochs: 3
@@ -47,7 +47,7 @@ push_to_hub: true
 report_to:
 - wandb
 save_strategy: "steps"
-save_steps: 200
+save_steps: 0.1
 save_total_limit: 1
 seed: 42
 use_liger: false # Bug in TRL when true
