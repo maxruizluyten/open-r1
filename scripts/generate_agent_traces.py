@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 import random
@@ -9,14 +10,33 @@ from typing import Set
 
 from datasets import load_dataset
 from tqdm.asyncio import tqdm
-
+from typing import Any
 import aiofiles
 import aiohttp
 import uvloop
-from smolagents import CodeAgent
 
+from smolagents import CodeAgent, Tool, LiteLLMModel
+
+from dotenv import load_dotenv
+
+load_dotenv()
 file_lock = Lock()
 
+
+oai_model = LiteLLMModel("gpt-4o")
+
+class ModifiedFinalAnswerTool(Tool):
+    name = "final_answer"
+    description = "Provides a final answer to the given problem."
+    inputs = {'answer_function': {'type': 'any', 'description': 'The final function that solves the problem'}}
+    output_type = "string"
+
+    def forward(self, answer_function: Any) -> str:
+        print("USING MODIFIED FINAL ANSWER TOOL")
+        return inspect.getsource(answer_function)
+
+    def __init__(self, *args, **kwargs):
+        self.is_initialized = False
 
 async def generate_completion_from_messages(session, messages, args):
     retry_budget = 10
@@ -53,9 +73,17 @@ async def get_agent_run(session, task, args):
                 args
             )["choices"][0]["message"]["content"]
         ))
-    agent = CodeAgent(model=model, tools=[], additional_authorized_imports=["sympy", "numpy", "math"])
+    agent = CodeAgent(
+        model=oai_model,
+        tools=[ModifiedFinalAnswerTool()],
+        additional_authorized_imports=["sympy", "numpy", "math"],
+        max_steps=6
+    )
+    # agent = CodeAgent(model=model, tools=[], additional_authorized_imports=["sympy", "numpy", "math"])
     try:
-        agent.run(task)
+        output = agent.run(task)
+        print("GOT OUTPUT:", output)
+
         return agent.write_memory_to_messages()
     except Exception as e:
         print(f"Error when generating agentic trace: {e}")
@@ -63,7 +91,7 @@ async def get_agent_run(session, task, args):
 
 
 async def process_example(example, session, args, output_file, pbar):
-    prompt = example[args.prompt_column]
+    prompt = f"Here is a task to solve using a function: {example[args.prompt_column]}\n\nNow write a function that solves the problem, test it and return it using final_answer(your_function)."
     try:
         tasks = [get_agent_run(session, prompt, args) for _ in range(args.num_generations)]
 
@@ -122,24 +150,24 @@ async def load_processed_uuids(output_file, uuid_column):
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset-name", type=str, required=True)
+    # parser.add_argument("--dataset-name", type=str, required=True)
     parser.add_argument("--output-file", type=str, required=True)
     parser.add_argument("--prompt-column", type=str, required=True)
     parser.add_argument("--uuid-column", type=str, required=True)
     parser.add_argument("--api-addr", type=str, default="localhost:39876")
     parser.add_argument("--num-generations", type=int, default=4)
-    parser.add_argument(
-        "--prompt-template",
-        type=str,
-        default="You will be given a problem. Please reason step by step, and put your final answer within \\boxed{{}}:\n{prompt}",
-    )
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--max-tokens", type=int, default=16384)
     parser.add_argument("--max-concurrent", type=int, default=1000)
     args = parser.parse_args()
 
-    dataset = load_dataset(args.dataset_name, split="train").shuffle()
+    dataset = load_dataset(
+        "open-r1/codeforces-test-cases",
+        split="train",
+        token=os.getenv("HF_TOKEN")
+    ).shuffle()
+    dataset = dataset.filter(lambda x: x["full_test_set"])
     processed_uuids = await load_processed_uuids(args.output_file, args.uuid_column)
     if processed_uuids:
         print(f"Found {len(processed_uuids)} already processed examples, resuming from there...")
