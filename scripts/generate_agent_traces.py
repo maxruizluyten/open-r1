@@ -63,29 +63,34 @@ class ChatMessage:
     content: str
 
 async def get_agent_run(session, task, args):
+    # Store the main event loop
+    main_loop = asyncio.get_event_loop()
+    
     def model(messages):
-        return ChatMessage(await generate_completion_from_messages(
-                session,
-                messages,
-                args
-            )["choices"][0]["message"]["content"]
+        # Create a future in the main loop
+        future = asyncio.run_coroutine_threadsafe(
+            generate_completion_from_messages(session, messages, args),
+            main_loop
         )
+        
+        # Wait for the result (this is a blocking call)
+        result = future.result()
+        return ChatMessage(content=result["choices"][0]["message"]["content"])
+    
     agent = CodeAgent(
         model=model,
         tools=[ModifiedFinalAnswerTool()],
         additional_authorized_imports=["sympy", "numpy", "math"],
         max_steps=6
     )
-    # agent = CodeAgent(model=model, tools=[], additional_authorized_imports=["sympy", "numpy", "math"])
+    
     try:
         output = agent.run(task)
         print("GOT OUTPUT:", output)
-
         return agent.write_memory_to_messages()
     except Exception as e:
         print(f"Error when generating agentic trace: {e}")
         return None
-
 
 async def process_example(example, session, args, output_file, pbar):
     prompt = f"Here is a task to solve using a function: {example[args.prompt_column]}\n\nNow write a function that solves the problem, test it and return it using final_answer(your_function)."
