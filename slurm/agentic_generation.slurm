@@ -17,7 +17,7 @@ python scripts/generate_agent_traces.py \
     --output-file "codeforces_agentic_generations.jsonl" \
     --prompt-column "prompt" \
     --uuid-column "contestId" \
-    --api-addr "10.53.95.152:39876" \
+    --api-addr "10.53.83.199" \
     --num-generations 5 \
     --max-tokens 32768 \
     --max-concurrent 1
