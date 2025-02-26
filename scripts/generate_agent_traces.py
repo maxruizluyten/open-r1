@@ -36,7 +36,7 @@ class ModifiedFinalAnswerTool(Tool):
     def __init__(self, *args, **kwargs):
         self.is_initialized = False
 
-async def generate_completion_from_messages(session, messages, args):
+async def generate_completion_from_messages(session, messages, args, stop_sequences):
     retry_budget = 10
     while retry_budget > 0:
         try:
@@ -49,6 +49,7 @@ async def generate_completion_from_messages(session, messages, args):
                     "max_tokens": args.max_tokens,
                     "temperature": args.temperature,
                     "top_p": args.top_p,
+                    "stop": stop_sequences,
                 },
                 headers={"Authorization": "Bearer EMPTY"},
             ) as response:
@@ -66,10 +67,10 @@ async def get_agent_run(session, task, args):
     # Store the main event loop
     main_loop = asyncio.get_event_loop()
     
-    def model(messages):
+    def model(messages, stop_sequences):
         # Create a future in the main loop
         future = asyncio.run_coroutine_threadsafe(
-            generate_completion_from_messages(session, messages, args),
+            generate_completion_from_messages(session, messages, args, stop_sequences),
             main_loop
         )
         
