@@ -1,10 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=gen-r1
-#SBATCH --partition=hopper-cpu
+#SBATCH --job-name=agentic-r1
+#SBATCH --gres=gpu:8
+#SBATCH --partition=hopper-prod
 #SBATCH --qos=high
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=1875m
 #SBATCH --output=./logs/%x_%j_%n.out
 #SBATCH --error=./logs/%x_%j_%n.err
 #SBATCH --time=7-00:00:00
