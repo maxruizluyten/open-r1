@@ -64,13 +64,12 @@ class ChatMessage:
 
 async def get_agent_run(session, task, args):
     def model(messages):
-        return ChatMessage(content=asyncio.run(
-            generate_completion_from_messages(
+        return ChatMessage(await generate_completion_from_messages(
                 session,
                 messages,
                 args
             )["choices"][0]["message"]["content"]
-        ))
+        )
     agent = CodeAgent(
         model=model,
         tools=[ModifiedFinalAnswerTool()],
