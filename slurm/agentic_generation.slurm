@@ -10,6 +10,7 @@
 
 set -exuo pipefail
 
+conda init
 conda activate /fsx/aymeric/venv
 
 python scripts/generate_agent_traces.py \
