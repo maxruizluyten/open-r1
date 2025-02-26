@@ -19,4 +19,4 @@ python scripts/generate_agent_traces.py \
     --api-addr "10.53.83.199" \
     --num-generations 5 \
     --max-tokens 32768 \
-    --max-concurrent 32
+    --max-concurrent 128
