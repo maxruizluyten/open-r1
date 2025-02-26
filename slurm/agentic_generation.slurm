@@ -10,7 +10,7 @@
 
 set -exuo pipefail
 
-source ~/venvs/gaia/bin/activate
+conda activate /fsx/aymeric/venv
 
 python scripts/generate_agent_traces.py \
     --output-file "codeforces_agentic_generations.jsonl" \
