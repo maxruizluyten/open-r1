@@ -7,10 +7,10 @@
 #SBATCH --output=./logs/%x_%j_%n.out
 #SBATCH --error=./logs/%x_%j_%n.err
 #SBATCH --time=7-00:00:00
-
 set -exuo pipefail
 
-conda init
+source ~/.bashrc
+source $(conda info --base)/etc/profile.d/conda.sh
 conda activate /fsx/aymeric/venv
 
 python scripts/generate_agent_traces.py \
