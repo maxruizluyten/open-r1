@@ -15,15 +15,13 @@ import aiofiles
 import aiohttp
 import uvloop
 
-from smolagents import CodeAgent, Tool, LiteLLMModel
+from smolagents import CodeAgent, Tool
 
 from dotenv import load_dotenv
 
 load_dotenv()
 file_lock = Lock()
 
-
-oai_model = LiteLLMModel("gpt-4o")
 
 class ModifiedFinalAnswerTool(Tool):
     name = "final_answer"
@@ -74,7 +72,7 @@ async def get_agent_run(session, task, args):
             )["choices"][0]["message"]["content"]
         ))
     agent = CodeAgent(
-        model=oai_model,
+        model=model,
         tools=[ModifiedFinalAnswerTool()],
         additional_authorized_imports=["sympy", "numpy", "math"],
         max_steps=6
