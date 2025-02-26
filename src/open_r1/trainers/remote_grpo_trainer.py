@@ -1,3 +1,18 @@
+# Copyright 2025 The HuggingFace Team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 import contextlib
 import functools
 import gc
@@ -5,17 +20,20 @@ import math
 import os
 import tempfile
 import time
+import accelerate
 from torch.utils.data import RandomSampler
 from typing import Iterator
-
+from transformers import AutoModelForCausalLM
 from collections import defaultdict
 from dataclasses import dataclass, field
 from multiprocessing import reduction
 from typing import Callable, Optional, Union
 from unittest.mock import patch
+import deepspeed
 from confection import ARGS_FIELD_ALIAS
 from transformers.utils import is_liger_kernel_available
 import torch
+from copy import deepcopy
 from datasets import Dataset
 from torch.utils.data import DataLoader
 from transformers import (
@@ -145,7 +163,7 @@ class RemoteGRPOConfig(trl.GRPOConfig):
         metadata={"help": ("The project to store runs under.")},
     )
     remote_gen_model_url: str = field(
-        default="26.0.164.45",
+        default="26.0.171.230",
     )
     remote_gen_model_port: str = field(
         default="30010",
@@ -188,53 +206,20 @@ class RemoteGRPOTrainer(Trainer):
             self.reward_weights = torch.tensor(args.reward_weights, dtype=torch.float32)
         else:
             self.reward_weights = torch.ones(len(reward_funcs), dtype=torch.float32)
+        self.model_name_or_path = model
         if isinstance(model, str):
+            # todo
             model = self._create_model_from_path(model, args)
             
         def data_collator(features):  # No data collation is needed in GRPO
             return features
         
         self.batch_buffer = []
+        self.grad_acc_scalar = exact_div(self.args.gradient_accumulation_steps, self.args.num_generations)
             
         super().__init__(model, args, train_dataset=train_dataset, processing_class=processing_class, callbacks=callbacks, data_collator=data_collator)
-        
-    def get_train_dataloader(self) -> DataLoader:
-        """
-        Returns the training [`~torch.utils.data.DataLoader`].
-
-        Will use no sampler if `train_dataset` does not implement `__len__`, a random sampler (adapted to distributed
-        training if necessary) otherwise.
-
-        Subclass and override this method if you want to inject some custom behavior.
-        """
-        if self.train_dataset is None:
-            raise ValueError("Trainer: training requires a train_dataset.")
-
-        train_dataset = self.train_dataset
-        data_collator = self.data_collator
-        # if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
-        #     train_dataset = self._remove_unused_columns(train_dataset, description="training")
-        # else:
-        #     data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
-
-        if self.args.dataloader_num_workers != 0:
-            raise ValueError("dataloader_num_workers should not be greater than 0 for remote training")
-
-        dataloader_params = {
-            "batch_size": self._train_batch_size,
-            "collate_fn": data_collator,
-            "num_workers": self.args.dataloader_num_workers, #should be 0
-            "pin_memory": self.args.dataloader_pin_memory, # should be False ?
-            "persistent_workers": self.args.dataloader_persistent_workers, 
-            "config": self.args,
-            "remote_model": self.remote_model,
-            "processing_class": self.processing_class,
-            "reward_funcs": self.reward_funcs,
-            "config": self.args,
-               
-        }
-        return self.accelerator.prepare(RemoteGRPODataloader(train_dataset,
-                                                             **dataloader_params))
+            
+    
         
     def _create_model_from_path(self, model_path: str, args) -> PreTrainedModel:
         """Creates a model from a path or model identifier."""
@@ -260,8 +245,10 @@ class RemoteGRPOTrainer(Trainer):
             if not is_liger_kernel_available():
                 raise ImportError("Please install Liger-kernel for use_liger=True")
             model = AutoLigerKernelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
+            
         else:
             model = AutoModelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
+            
         return model
     
     def _get_train_sampler(self) -> Sampler:
@@ -275,7 +262,7 @@ class RemoteGRPOTrainer(Trainer):
             raise ValueError("dataloader_num_workers should not be greater than 0 for remote training")
         return RepeatBatchRandomSampler(
             data_source=self.train_dataset,
-            batch_size=self._train_batch_size,
+            batch_size=self._train_batch_size *self.grad_acc_scalar,
             num_generations=self.args.num_generations,
             replacement=False,
         )
@@ -409,13 +396,25 @@ class RemoteGRPOTrainer(Trainer):
     @profiling_decorator
     def _sync_weights(self):
         self.accelerator.wait_for_everyone()
+        # if self.accelerator.is_main_process:
+        start = time.time()
+        # would be better if this was a ram disk + separate thread for writing
+        # TODO, we need multi-process tmp dir here
+        
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
+        state_dict = {}
+        for name, param in unwrapped_model.named_parameters():
+            with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
+                state_dict[name] = param.cpu().detach().clone()
+        
+        
+        # state_dict = self.accelerator.get_state_dict(self.deepspeed)
+        
         if self.accelerator.is_main_process:
-            start = time.time()
-            # would be better is this was a ram disk + separate thread for writing
             with tempfile.TemporaryDirectory(dir="/fsx/edward/work/open-r1/data/") as temp_dir_path:
-                unwrapped_model = self.accelerator.unwrap_model(self.model)
-                unwrapped_model.save_pretrained(temp_dir_path)
+                self._save(temp_dir_path, state_dict=state_dict)
                 self.remote_model.load_weights_from_path(temp_dir_path)
+            
             print("weight sync took: ", time.time() - start)
         self.accelerator.wait_for_everyone()
         
@@ -432,6 +431,7 @@ class RemoteGRPOTrainer(Trainer):
         logits = logits[:, -logits_to_keep:]
         return selective_log_softmax(logits, input_ids)  #  compute logprobs for the input tokens
     
+    @profiling_decorator
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         device = self.accelerator.device
         prompt_ids = [torch.LongTensor(example["prompt_ids"]) for example in inputs]
