@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 file_lock = Lock()
 
-
+print("Launching generation")
 class ModifiedFinalAnswerTool(Tool):
     name = "final_answer"
     description = "Provides a final answer to the given problem."
