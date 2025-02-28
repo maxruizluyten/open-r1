@@ -120,7 +120,17 @@ def get_agent_run(session, task, args):
         return None
 
 def process_example(example, session, args, output_file, pbar=None):
-    prompt = f"Here is a task to solve using a function: {example[args.prompt_column]}\n\nNow write a function that solves the problem, test it and return it using final_answer(your_function). ALWAYS RUN THE FUNCTION IN A CODE SNIPPET WITH TEST CASES BEFORE RETURNING IT."
+    prompt = f"""Here is a task to solve using a function:
+    {example[args.prompt_column]}
+    
+    Now write a function that solves the problem, test it and return it using final_answer(your_function).
+    The function should take the inputs described in the task above, using them in this way: the function will be passed the 'lines' described in the task as different arguments.
+    For instance:
+    - if the task says 'the first line is a number, the second line is a list of numbers', your function should take two arguments like this: def your_function(n, numbers).
+    - if the task says 'the first line will contain a number n, the n lines after that will be strings', your function should take flexible arguments like this: def your_function(n, *n_lines).
+    Make sure to properly extract the inputs from the string arguments.
+    ALWAYS RUN THE FUNCTION IN A CODE SNIPPET WITH TEST CASES BEFORE RETURNING IT.
+    """
     try:
         agent_runs = []
         for _ in range(args.num_generations):
