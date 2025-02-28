@@ -78,7 +78,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
             
             # Parse JSON response
             try:
-                output = response.json()
+                output = response.json(content_type=None)
                 print("GOT OUTPUT:", output)
                 return output
             except ValueError as e:
@@ -96,16 +96,14 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
             time.sleep(20)
     
     
-    print("Failed to get a valid response after multiple retries")
-    return None
+    raise Exception("Failed to get a valid response after multiple retries")
 
 def get_agent_run(session, task, args):
     from smolagents.models import get_clean_message_list
     def model(messages, stop_sequences = None):
         cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"})
+        print("Clean message list ok")
         result = generate_completion_from_messages(session, cleaned_messages, args, stop_sequences)
-        if result is None:
-            raise Exception("Failed to generate completion after multiple retries")
         return ChatMessage(content=result["choices"][0]["message"]["content"])
 
     dummy_completion = generate_completion_from_messages(session, [{"role": "user", "content": "Hello world"}], args, [])
