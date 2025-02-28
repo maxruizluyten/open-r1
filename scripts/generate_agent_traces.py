@@ -62,14 +62,21 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
                 timeout=60
             )
             
-            # Check for HTTP errors
-            response.raise_for_status()
+            # Check status code and log error content if needed
+            if response.status_code >= 400:
+                print(f"HTTP Error {response.status_code}: {response.reason}")
+                print(f"Response content: {response.text}")
+                traceback.print_exc()
+                retry_budget -= 1
+                time.sleep(20)
+                continue
             
             # Parse JSON response
             try:
                 return response.json()
             except ValueError as e:
                 print(f"JSON parsing error: {e}")
+                print(f"Response content: {response.text}")
                 traceback.print_exc()
                 retry_budget -= 1
                 time.sleep(5)
