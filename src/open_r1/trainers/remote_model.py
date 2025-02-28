@@ -36,6 +36,8 @@ class RemoteModel:
 
     python3 -m sglang.launch_server --model-path HuggingFaceTB/SmolLM2-1.7B-Instruct --port=30010 --skip-tokenizer-init --mem-fraction-static 0.6 --host=0.0.0.0 --dp-size=8
 
+
+    python3 -m sglang.launch_server --model-path open-r1/Qwen2.5-Coder-7B-Instruct-SFT --revision v00.08-step-000001280  --port=30010 --skip-tokenizer-init --mem-fraction-static 0.7 --host=0.0.0.0 --dp-size=8
     """
 
     def __init__(self, remote_model_url, remote_model_port, stop_token_id=None):
@@ -52,7 +54,7 @@ class RemoteModel:
         except requests.RequestException:
             return False
 
-    def wait_for_server(self, max_retries=50, delay=5):
+    def wait_for_server(self, max_retries=120, delay=5):
         """Waits for the server to become available before proceeding."""
         for attempt in range(max_retries):
             if self.is_healthy():

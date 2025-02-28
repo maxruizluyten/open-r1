@@ -17,6 +17,8 @@ source openr1/bin/activate
 echo Starting sglang server...
 
 MODEL_ID=$1
-PORT=$2
+REVISION=$2
+PORT=$3
+
 NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
-python3 -m sglang.launch_server --model-path $MODEL_ID --port=$PORT --skip-tokenizer-init --mem-fraction-static 0.6 --host=0.0.0.0 --dp-size=$NUM_GPUS
+python3 -m sglang.launch_server --model-path $MODEL_ID --revision $REVISION --port=$PORT --skip-tokenizer-init --mem-fraction-static 0.7 --host=0.0.0.0 --dp-size=$NUM_GPUS

@@ -35,6 +35,7 @@ from transformers.utils import is_liger_kernel_available
 import torch
 from copy import deepcopy
 from datasets import Dataset
+from accelerate.utils import broadcast_object_list
 from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForCausalLM,
@@ -54,6 +55,7 @@ from typing import Any
 from transformers.integrations import get_reporting_integration_callbacks
 from transformers.trainer import DEFAULT_CALLBACKS, DEFAULT_PROGRESS_CALLBACK
 from transformers.trainer_callback import CallbackHandler, ExportableState, PrinterCallback
+from open_r1.trainers.job_launcher import SGLangSlurmJobLauncher
 
 import trl
 from accelerate import Accelerator
@@ -162,8 +164,8 @@ class RemoteGRPOConfig(trl.GRPOConfig):
         default=None,
         metadata={"help": ("The project to store runs under.")},
     )
-    remote_gen_model_url: str = field(
-        default="26.0.171.230",
+    remote_gen_model_url: Optional[str] = field(
+        default=None,
     )
     remote_gen_model_port: str = field(
         default="30010",
@@ -185,11 +187,9 @@ class RemoteGRPOTrainer(Trainer):
                  processing_class, 
                  callbacks):
         self.args = args
-        self.remote_model = RemoteModel(
-            self.args.remote_gen_model_url,
-            self.args.remote_gen_model_port,
-            processing_class.eos_token_id,
-        )
+        
+
+
         
         # Reward functions
         if not isinstance(reward_funcs, list):
@@ -208,8 +208,10 @@ class RemoteGRPOTrainer(Trainer):
             self.reward_weights = torch.ones(len(reward_funcs), dtype=torch.float32)
         self.model_name_or_path = model
         if isinstance(model, str):
-            # todo
-            model = self._create_model_from_path(model, args)
+            model_path = model
+            model = self._create_model_from_path(model_path, args)
+            self.ref_model = self._create_model_from_path(model_path, args)
+            
             
         def data_collator(features):  # No data collation is needed in GRPO
             return features
@@ -218,8 +220,26 @@ class RemoteGRPOTrainer(Trainer):
         self.grad_acc_scalar = exact_div(self.args.gradient_accumulation_steps, self.args.num_generations)
             
         super().__init__(model, args, train_dataset=train_dataset, processing_class=processing_class, callbacks=callbacks, data_collator=data_collator)
+        
+        ip_address = self.args.remote_gen_model_url
+        
+        if self.args.remote_gen_model_url is None and self.accelerator.is_main_process:
+            # we launch a job from here, get the ip on main process and broadcast to others
+            # it would be better to move this to the start so the server warms up which the local model is being loaded
+            model_revision = args.model_init_kwargs.get("revision", "main")
+            self.sglang_job_launcher = SGLangSlurmJobLauncher(
+                model_path, model_revision, num_gpus=self.args.remote_gen_model_n_gpus, sglang_port=self.args.remote_gen_model_port
+            )
+            ip_address = self.sglang_job_launcher.launch()
+
+        # get the ip from main process and broadcast to others
+        gather_ip_address = broadcast_object_list([ip_address], 0)
+        self.args.remote_gen_model_url = gather_ip_address[0]
             
-    
+        self.remote_model = RemoteModel(
+            self.args.remote_gen_model_url, self.args.remote_gen_model_port, self.processing_class.eos_token_id
+        )
+        self.remote_model.wait_for_server()
         
     def _create_model_from_path(self, model_path: str, args) -> PreTrainedModel:
         """Creates a model from a path or model identifier."""
@@ -468,21 +488,25 @@ class RemoteGRPOTrainer(Trainer):
         completion_mask =completion_mask.to(device)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         
-        # ref_per_token_logps = inputs["ref_per_token_logps"]
+        # TODO: this could be precomputed at the generation stage with larger batches so the ref model can be unloaded
+        with torch.inference_mode():
+            ref_per_token_logps = self._get_per_token_logps(
+                self.model, input_ids, attention_mask, logits_to_keep
+            )
 
         per_token_logps = self._get_per_token_logps(
             model, input_ids, attention_mask, logits_to_keep
         )
         # TODO: add the reference model
-        # per_token_kl = (
-        #     torch.exp(ref_per_token_logps - per_token_logps)
-        #     - (ref_per_token_logps - per_token_logps)
-        #     - 1
-        # )
+        per_token_kl = (
+            torch.exp(ref_per_token_logps - per_token_logps)
+            - (ref_per_token_logps - per_token_logps)
+            - 1
+        )
         advs = torch.Tensor([example["advantages"] for example in inputs]).to(device)
         # TODO: convert to clipped loss so we can multiple GRPO epochs
         per_token_loss = -torch.exp(per_token_logps - per_token_logps.detach()) * advs.unsqueeze(1)
-        # per_token_loss = per_token_loss + self.args.beta * per_token_kl
+        per_token_loss = per_token_loss + self.args.beta * per_token_kl
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
         
         return loss

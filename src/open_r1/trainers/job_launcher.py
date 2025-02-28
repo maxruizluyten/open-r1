@@ -8,6 +8,7 @@ class SGLangSlurmJobLauncher:
     def __init__(
         self,
         model_id_or_path,
+        model_revision,
         num_gpus=1,
         sglang_port=30010,
         slurm_script="slurm/launch_sglang.slurm",
@@ -24,6 +25,7 @@ class SGLangSlurmJobLauncher:
         self.node_name = None
         self.check_interval = check_interval
         self.model_id_or_path = model_id_or_path
+        self.model_revision = model_revision
         self.num_gpus = num_gpus
         self.sglang_port = sglang_port
 
@@ -39,6 +41,7 @@ class SGLangSlurmJobLauncher:
                     f"--gres=gpu:{self.num_gpus}",
                     self.slurm_script,
                     self.model_id_or_path,
+                    self.model_revision,
                     str(self.sglang_port),
                 ],
                 stdout=subprocess.PIPE,
