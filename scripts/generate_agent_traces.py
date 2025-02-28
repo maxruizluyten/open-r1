@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from typing import Set, Any, List
 from pathlib import Path
+import traceback
 
 from datasets import load_dataset
 from tqdm import tqdm
@@ -40,12 +41,13 @@ class ChatMessage:
     def __init__(self, content):
         self.content = content
 
+
 def generate_completion_from_messages(session, messages, args, stop_sequences):
     retry_budget = 10
     while retry_budget > 0:
         try:
             # Add a small random delay to prevent overwhelming the API
-            time.sleep(60 + random.uniform(0.0, 0.1))
+            time.sleep(random.uniform(0.0, 0.1))
             response = session.post(
                 f"http://{args.api_addr}/v1/chat/completions",
                 json={
@@ -67,15 +69,18 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
             try:
                 return response.json()
             except ValueError as e:
-                print(f"JSON parsing error: {e}. Response: {response.text[:100]}...")
+                print(f"JSON parsing error: {e}")
+                traceback.print_exc()
                 retry_budget -= 1
                 time.sleep(5)
                 continue
                 
         except requests.exceptions.RequestException as e:
             print(f"API request error (will retry): {e}")
+            traceback.print_exc()
             retry_budget -= 1
-            time.sleep(10)
+            time.sleep(20)
+    
     
     print("Failed to get a valid response after multiple retries")
     return None
