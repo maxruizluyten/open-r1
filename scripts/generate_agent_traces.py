@@ -41,11 +41,17 @@ class ChatMessage:
     def __init__(self, content):
         self.content = content
 
+from transformers import AutoTokenizer
+tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1")
 
 def generate_completion_from_messages(session, messages, args, stop_sequences):
     retry_budget = 10
     while retry_budget > 0:
         try:
+            formatted_chat = tokenizer.apply_chat_template(messages, tokenize=False)
+            tokens = tokenizer.encode(formatted_chat)
+            token_count = len(tokens)
+            print("Input token count:", token_count)
             # Add a small random delay to prevent overwhelming the API
             time.sleep(random.uniform(0.0, 0.1))
             response = session.post(
@@ -213,7 +219,7 @@ def main():
     parser.add_argument("--num-generations", type=int, default=4)
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-p", type=float, default=0.95)
-    parser.add_argument("--max-tokens", type=int, default=16384)
+    parser.add_argument("--max-tokens", type=int, default=8096)
     parser.add_argument("--max-concurrent", type=int, default=1000)
     args = parser.parse_args()
 
