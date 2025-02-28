@@ -79,8 +79,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences) -
             
             # Parse JSON response
             try:
-                output = response.json(content_type=None)["choices"][0]["message"]["content"]
-                print("GOT OUTPUT:", output)
+                output = response.json()["choices"][0]["message"]["content"]
                 return output
             except ValueError as e:
                 print(f"JSON parsing error: {e}")
@@ -112,7 +111,8 @@ def get_agent_run(session, task, args):
         model=model,
         tools=[ModifiedFinalAnswerTool()],
         additional_authorized_imports=["sympy", "numpy", "math"],
-        max_steps=10
+        max_steps=10,
+        verbosity_level=2
     )
     
     try:
