@@ -100,7 +100,6 @@ def generate_completion_from_messages(session, messages, args, stop_sequences) -
 def get_agent_run(session, task, args):
     def model(messages, stop_sequences = None):
         cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"}, flatten_messages_as_text=True)
-        print("Clean message list ok")
         result = generate_completion_from_messages(session, cleaned_messages, args, stop_sequences)
         return ChatMessage(content=result)
 
@@ -121,7 +120,7 @@ def get_agent_run(session, task, args):
         return None
 
 def process_example(example, session, args, output_file, pbar=None):
-    prompt = f"Here is a task to solve using a function: {example[args.prompt_column]}\n\nNow write a function that solves the problem, test it and return it using final_answer(your_function)."
+    prompt = f"Here is a task to solve using a function: {example[args.prompt_column]}\n\nNow write a function that solves the problem, test it and return it using final_answer(your_function). ALWAYS RUN THE FUNCTION IN A CODE SNIPPET WITH TEST CASES BEFORE RETURNING IT."
     try:
         agent_runs = []
         for _ in range(args.num_generations):
