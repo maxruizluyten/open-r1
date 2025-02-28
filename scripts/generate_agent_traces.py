@@ -19,6 +19,7 @@ import requests.adapters
 from transformers import AutoTokenizer
 
 from smolagents import CodeAgent, Tool
+from smolagents.models import get_clean_message_list
 
 from dotenv import load_dotenv
 
@@ -45,7 +46,7 @@ class ChatMessage:
     def __init__(self, content):
         self.content = content
 
-def generate_completion_from_messages(session, messages, args, stop_sequences):
+def generate_completion_from_messages(session, messages, args, stop_sequences) -> str:
     retry_budget = 10
     while retry_budget > 0:
         try:
@@ -78,7 +79,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
             
             # Parse JSON response
             try:
-                output = response.json(content_type=None)
+                output = response.json(content_type=None)["choices"][0]["message"]["content"]
                 print("GOT OUTPUT:", output)
                 return output
             except ValueError as e:
@@ -94,21 +95,18 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
             traceback.print_exc()
             retry_budget -= 1
             time.sleep(20)
-    
-    
+
     raise Exception("Failed to get a valid response after multiple retries")
 
 def get_agent_run(session, task, args):
-    from smolagents.models import get_clean_message_list
     def model(messages, stop_sequences = None):
         cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"})
         print("Clean message list ok")
         result = generate_completion_from_messages(session, cleaned_messages, args, stop_sequences)
-        return ChatMessage(content=result["choices"][0]["message"]["content"])
+        return ChatMessage(content=result)
 
     dummy_completion = generate_completion_from_messages(session, [{"role": "user", "content": "Hello world"}], args, [])
     print("GOT DUMMY COMPLETION:", dummy_completion)
-
 
     agent = CodeAgent(
         model=model,
