@@ -99,13 +99,10 @@ def generate_completion_from_messages(session, messages, args, stop_sequences) -
 
 def get_agent_run(session, task, args):
     def model(messages, stop_sequences = None):
-        cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"})
+        cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"}, flatten_messages_as_text=True)
         print("Clean message list ok")
         result = generate_completion_from_messages(session, cleaned_messages, args, stop_sequences)
         return ChatMessage(content=result)
-
-    dummy_completion = generate_completion_from_messages(session, [{"role": "user", "content": "Hello world"}], args, [])
-    print("GOT DUMMY COMPLETION:", dummy_completion)
 
     agent = CodeAgent(
         model=model,
