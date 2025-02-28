@@ -32,7 +32,7 @@ max_prompt_length: 1024
 max_completion_length: 4096
 max_steps: -1
 num_train_epochs: 0.5
-num_generations: 14
+num_generations: 16
 output_dir: data/open-r1/SmolLM2-1.7B-Instruct-GRPO-v05.19
 overwrite_output_dir: true
 per_device_eval_batch_size: 4
