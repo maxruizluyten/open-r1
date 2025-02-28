@@ -19,5 +19,5 @@ python scripts/generate_agent_traces.py \
     --uuid-column "contestId" \
     --api-addr "10.53.83.199:39876" \
     --num-generations 5 \
-    --max-tokens 32768 \
+    --max-tokens 8096 \
     --max-concurrent 64
