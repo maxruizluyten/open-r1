@@ -78,7 +78,9 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
             
             # Parse JSON response
             try:
-                return response.json()
+                output = response.json()
+                print("GOT OUTPUT:", output)
+                return output
             except ValueError as e:
                 print(f"JSON parsing error: {e}")
                 print(f"Response content: {response.text}")
@@ -99,18 +101,22 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
 
 def get_agent_run(session, task, args):
     from smolagents.models import get_clean_message_list
-    def model(messages, stop_sequences):
+    def model(messages, stop_sequences = None):
         cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"})
         result = generate_completion_from_messages(session, cleaned_messages, args, stop_sequences)
         if result is None:
             raise Exception("Failed to generate completion after multiple retries")
         return ChatMessage(content=result["choices"][0]["message"]["content"])
-    
+
+    dummy_completion = generate_completion_from_messages(session, [{"role": "user", "content": "Hello world"}], args, [])
+    print("GOT DUMMY COMPLETION:", dummy_completion)
+
+
     agent = CodeAgent(
         model=model,
         tools=[ModifiedFinalAnswerTool()],
         additional_authorized_imports=["sympy", "numpy", "math"],
-        max_steps=6
+        max_steps=10
     )
     
     try:
