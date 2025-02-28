@@ -45,7 +45,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
     while retry_budget > 0:
         try:
             # Add a small random delay to prevent overwhelming the API
-            time.sleep(random.uniform(0.0, 0.1))
+            time.sleep(60 + random.uniform(0.0, 0.1))
             response = session.post(
                 f"http://{args.api_addr}/v1/chat/completions",
                 json={
@@ -79,7 +79,6 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
     
     print("Failed to get a valid response after multiple retries")
     return None
-
 
 def get_agent_run(session, task, args):
     def model(messages, stop_sequences):
