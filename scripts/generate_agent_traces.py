@@ -65,7 +65,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences) -
                     "stop": stop_sequences,
                 },
                 headers={"Authorization": "Bearer EMPTY"},
-                timeout=60
+                timeout=2*60*60
             )
 
             # Check status code and log error content if needed
@@ -87,7 +87,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences) -
                 print(f"Response content: {response.text}")
                 traceback.print_exc()
                 retry_budget -= 1
-                time.sleep(5)
+                time.sleep(20)
                 continue
                 
         except requests.exceptions.RequestException as e:
