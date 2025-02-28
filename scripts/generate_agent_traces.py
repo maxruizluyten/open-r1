@@ -16,12 +16,16 @@ from tqdm import tqdm
 import requests
 import requests.adapters
 
+from transformers import AutoTokenizer
+
 from smolagents import CodeAgent, Tool
 
 from dotenv import load_dotenv
 
 load_dotenv()
 file_lock = Lock()
+
+tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1")
 
 print("Launching generation")
 class ModifiedFinalAnswerTool(Tool):
@@ -41,17 +45,12 @@ class ChatMessage:
     def __init__(self, content):
         self.content = content
 
-from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1")
-
 def generate_completion_from_messages(session, messages, args, stop_sequences):
     retry_budget = 10
     while retry_budget > 0:
         try:
             formatted_chat = tokenizer.apply_chat_template(messages, tokenize=False)
-            tokens = tokenizer.encode(formatted_chat)
-            token_count = len(tokens)
-            print("Input token count:", token_count)
+            print("Input token count:", len(tokenizer.encode(formatted_chat)))
             # Add a small random delay to prevent overwhelming the API
             time.sleep(random.uniform(0.0, 0.1))
             response = session.post(
@@ -67,7 +66,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
                 headers={"Authorization": "Bearer EMPTY"},
                 timeout=60
             )
-            
+
             # Check status code and log error content if needed
             if response.status_code >= 400:
                 print(f"HTTP Error {response.status_code}: {response.reason}")
@@ -99,8 +98,10 @@ def generate_completion_from_messages(session, messages, args, stop_sequences):
     return None
 
 def get_agent_run(session, task, args):
+    from smolagents.models import get_clean_message_list
     def model(messages, stop_sequences):
-        result = generate_completion_from_messages(session, messages, args, stop_sequences)
+        cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"})
+        result = generate_completion_from_messages(session, cleaned_messages, args, stop_sequences)
         if result is None:
             raise Exception("Failed to generate completion after multiple retries")
         return ChatMessage(content=result["choices"][0]["message"]["content"])
