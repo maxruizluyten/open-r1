@@ -433,7 +433,7 @@ class FastGRPOTrainer(Trainer):
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             start = time.time()
-            with tempfile.TemporaryDirectory(dir="/fsx/edward/work/open-r1/data/") as temp_dir_path:
+            with tempfile.TemporaryDirectory(dir="/fsx/h4/tmp/") as temp_dir_path:
                 unwrapped_model = self.accelerator.unwrap_model(self.model)
                 unwrapped_model.save_pretrained(temp_dir_path)
                 self.remote_model.load_weights_from_path(temp_dir_path)

@@ -431,7 +431,7 @@ class RemoteGRPOTrainer(Trainer):
         # state_dict = self.accelerator.get_state_dict(self.deepspeed)
         
         if self.accelerator.is_main_process:
-            with tempfile.TemporaryDirectory(dir="/fsx/edward/work/open-r1/data/") as temp_dir_path:
+            with tempfile.TemporaryDirectory(dir="/fsx/h4/tmp/") as temp_dir_path:
                 self._save(temp_dir_path, state_dict=state_dict)
                 self.remote_model.load_weights_from_path(temp_dir_path)
             

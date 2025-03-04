@@ -17,7 +17,7 @@ vllm_gpu_memory_utilization: 0.9
 bf16: true
 do_eval: false
 eval_strategy: "no"
-gradient_accumulation_steps: 16
+gradient_accumulation_steps: 14
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
@@ -25,6 +25,7 @@ hub_model_id: open-r1/SmolLM2-1.7B-Instruct-GRPO-v05.19
 hub_strategy: every_save
 learning_rate: 1.0e-04
 log_level: info
+logging_first_step: true
 logging_steps: 1
 logging_strategy: steps
 lr_scheduler_type: cosine
@@ -59,8 +60,8 @@ warmup_ratio: 0.02
 # Saving and eval callbacks
 save_strategy: "steps"
 save_steps: 10
-callbacks:
-- push_to_hub_revision
-benchmarks:
-- math_500
-- aime24
+# callbacks:
+# - push_to_hub_revision
+# benchmarks:
+# - math_500
+# - aime24
