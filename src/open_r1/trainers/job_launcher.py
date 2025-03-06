@@ -12,7 +12,7 @@ SLURM_PREFIX = [
     "-i",
     "bash",
     "-c",
-    f"for f in /etc/profile.d/*.sh; do source $f; done; export HOME={user_home_directory}; sbatch ",
+    f"for f in /etc/profile.d/*.sh; do source $f; done; export HOME={user_home_directory}; sbatch --qos=high --output=/fsx/h4/logs/%x-%j.out --err=/fsx/h4/logs/%x-%j.err ",
 ]
 
 class SGLangSlurmJobLauncher:
