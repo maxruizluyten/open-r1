@@ -1,8 +1,10 @@
 import atexit
-import re
 import os
+import re
 import subprocess
 import time
+
+
 # We need a special environment setup to launch vLLM from within Slurm training jobs.
 # - Reference code: https://github.com/huggingface/brrr/blob/c55ba3505686d690de24c7ace6487a5c1426c0fd/brrr/lighteval/one_job_runner.py#L105
 # - Slack thread: https://huggingface.slack.com/archives/C043JTYE1MJ/p1726566494958269
@@ -14,6 +16,7 @@ SLURM_PREFIX = [
     "-c",
     f"for f in /etc/profile.d/*.sh; do source $f; done; export HOME={user_home_directory}; sbatch --qos=high --output=/fsx/h4/logs/%x-%j.out --err=/fsx/h4/logs/%x-%j.err ",
 ]
+
 
 class SGLangSlurmJobLauncher:
     def __init__(
@@ -45,15 +48,15 @@ class SGLangSlurmJobLauncher:
 
     def submit_job(self):
         """Submits the SLURM job and extracts the job ID."""
-        
+
         cmd = SLURM_PREFIX.copy()
         cmd_args = [
-        f"--gres=gpu:{self.num_gpus}",
-        self.slurm_script,
-        self.model_id_or_path,
-        self.model_revision,
-        str(self.sglang_port),
-    ]
+            f"--gres=gpu:{self.num_gpus}",
+            self.slurm_script,
+            self.model_id_or_path,
+            self.model_revision,
+            str(self.sglang_port),
+        ]
         cmd[-1] += " " + " ".join(cmd_args)
         try:
             result = subprocess.run(

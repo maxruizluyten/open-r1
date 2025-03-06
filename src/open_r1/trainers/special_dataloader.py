@@ -1,27 +1,29 @@
-from datasets import load_dataset, Dataset
+from collections import defaultdict
+
 import torch
+from datasets import Dataset, load_dataset
 from torch.utils.data import DataLoader
-from open_r1.configs import GRPOConfig
-from open_r1.trainers.remote_model import RemoteModel
 from transformers import AutoTokenizer
 
-from collections import defaultdict
+from open_r1.configs import GRPOConfig
+from open_r1.trainers.remote_model import RemoteModel
 from trl.data_utils import is_conversational, maybe_apply_chat_template
 
 
-
 class RemoteGRPODataloader(DataLoader):
-    def __init__(self, *args, config: GRPOConfig, remote_model=None, processing_class=None, reward_funcs=None, **kwargs):
+    def __init__(
+        self, *args, config: GRPOConfig, remote_model=None, processing_class=None, reward_funcs=None, **kwargs
+    ):
         super().__init__(*args, **kwargs)
         self.config = config
         self.remote_model = remote_model
         self.processing_class = processing_class
         self.reward_funcs = reward_funcs
-        self.reward_weights = [1.0] * len(reward_funcs) # TODO: make this configurable
-        
+        self.reward_weights = [1.0] * len(reward_funcs)  # TODO: make this configurable
+
     def __len__(self):
-        return super().__len__() * self.config.num_generations    
-    
+        return super().__len__() * self.config.num_generations
+
     def __iter__(self):
         for batch in super().__iter__():
             batch = self._prepare_batch(batch)
@@ -35,8 +37,7 @@ class RemoteGRPODataloader(DataLoader):
             )
             for mini_batch in mini_batch_dataloader:
                 yield mini_batch
-                
-                
+
     def _prepare_batch(self, batch):
         prompts = [x["prompt"] for x in batch]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in batch]
@@ -106,8 +107,8 @@ class RemoteGRPODataloader(DataLoader):
 
 
 if __name__ == "__main__":
-
     dataset = load_dataset("open-r1/OpenR1-Math-cn_k12-86k", split="train").select(range(32))
+
     def make_conversation(example):
         prompt = []
 
@@ -115,27 +116,31 @@ if __name__ == "__main__":
         return {"prompt": prompt}
 
     dataset = dataset.map(make_conversation)
+
     def collate_fn(batch):
         return batch
+
     dataset = dataset.remove_columns("messages")
+
     def reward_func(prompts, completions, **kwargs):
-        return [0.5]*len(prompts)
+        return [0.5] * len(prompts)
 
     reward_funcs = [reward_func, reward_func]
 
-    MODEL="HuggingFaceTB/SmolLM2-135M-Instruct"
+    MODEL = "HuggingFaceTB/SmolLM2-135M-Instruct"
     processing_class = AutoTokenizer.from_pretrained(MODEL)
     remote_model = RemoteModel("0.0.0.0", 30010, processing_class.eos_token_id)
     config = GRPOConfig()
-    data_loader = RemoteGRPODataloader(dataset, 
-                                remote_model=remote_model,
-                                processing_class=processing_class,
-                                reward_funcs=reward_funcs,
-                                batch_size=2,
-                                num_workers=0,
-                                collate_fn=collate_fn,
-                                config=config
-                                )
+    data_loader = RemoteGRPODataloader(
+        dataset,
+        remote_model=remote_model,
+        processing_class=processing_class,
+        reward_funcs=reward_funcs,
+        batch_size=2,
+        num_workers=0,
+        collate_fn=collate_fn,
+        config=config,
+    )
     print(len(data_loader))
 
     for i, batch in enumerate(data_loader):

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from multiprocessing import reduction
 from typing import Callable, Optional, Union
 from unittest.mock import patch
-from transformers.utils import is_liger_kernel_available
+
 import torch
 from datasets import Dataset
 from torch.utils.data import DataLoader
@@ -46,6 +46,7 @@ from transformers import (
 from transformers.integrations import get_reporting_integration_callbacks
 from transformers.trainer import DEFAULT_CALLBACKS, DEFAULT_PROGRESS_CALLBACK
 from transformers.trainer_callback import CallbackHandler, ExportableState, PrinterCallback
+from transformers.utils import is_liger_kernel_available
 
 import trl
 from accelerate import Accelerator
@@ -201,13 +202,14 @@ class FastGRPOTrainer(Trainer):
             model_str = model
             model = AutoModelForCausalLM.from_pretrained(model_str, **model_init_kwargs)
             # offload to cpu
-            ref_model = AutoModelForCausalLM.from_pretrained(model_str, **model_init_kwargs) #.to("cpu")
+            ref_model = AutoModelForCausalLM.from_pretrained(model_str, **model_init_kwargs)  # .to("cpu")
 
         self.model = model
         self.ref_model = ref_model
         if self.args.use_liger_kernel:
             if is_liger_kernel_available():
                 from liger_kernel.transformers import _apply_liger_kernel_to_instance
+
                 _apply_liger_kernel_to_instance(model=self.model)
                 _apply_liger_kernel_to_instance(model=self.ref_model)
             else:
@@ -290,7 +292,7 @@ class FastGRPOTrainer(Trainer):
             drop_last=True,
         )
         torch.manual_seed(args.seed)
-                # Enable gradient checkpointing if requested
+        # Enable gradient checkpointing if requested
         if args.gradient_checkpointing:
             self.model = self._enable_gradient_checkpointing(self.model, self.args)
         self.model, self.optimizer, self.dataloader = self.accelerator.prepare(
@@ -304,6 +306,7 @@ class FastGRPOTrainer(Trainer):
         self.remote_model = RemoteModel(
             self.args.remote_gen_model_url, self.args.remote_gen_model_port, self.processing_class.eos_token_id
         )
+
     def _enable_gradient_checkpointing(self, model: PreTrainedModel, args: FastGRPOConfig) -> PreTrainedModel:
         """Enables gradient checkpointing for the model."""
         # Ensure use_cache is disabled
@@ -318,6 +321,7 @@ class FastGRPOTrainer(Trainer):
             model.enable_input_require_grads()
 
         return model
+
     def print_gpu_memory_usage(self):
         if torch.cuda.is_available():
             gpu_memory_allocated = torch.cuda.memory_allocated()
@@ -478,16 +482,18 @@ class FastGRPOTrainer(Trainer):
             prompt_ids = [torch.LongTensor(example["prompt_ids"]) for example in examples]
             completion_ids = [torch.LongTensor(example["completion_ids"]) for example in examples]
             ref_per_token_logps = [torch.Tensor(example["ref_per_token_logps"]) for example in examples]
-            
+
             for logps, completion_id in zip(ref_per_token_logps, completion_ids):
-                assert len(logps) == len(completion_id), f"len(logps)={len(logps)} != len(completion_id)={len(completion_id)}"
-            
+                assert len(logps) == len(completion_id), (
+                    f"len(logps)={len(logps)} != len(completion_id)={len(completion_id)}"
+                )
+
             pad_token_id = self.processing_class.pad_token_id
-            
+
             padded_prompt_ids = pad(prompt_ids, padding_value=pad_token_id, padding_side="left")
             padded_completion_ids = pad(completion_ids, padding_value=pad_token_id, padding_side="right")
             padd_ref_per_token_logps = pad(ref_per_token_logps, padding_value=0.0, padding_side="right")
-            
+
             if self.args.max_prompt_length is not None:
                 padded_prompt_ids = padded_prompt_ids[:, -self.args.max_prompt_length :]
 
@@ -502,7 +508,6 @@ class FastGRPOTrainer(Trainer):
             completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
 
             advantages = torch.Tensor([example["advantages"] for example in examples])
-            
 
             return {
                 "prompt_ids": padded_prompt_ids.to(device),
@@ -520,7 +525,7 @@ class FastGRPOTrainer(Trainer):
 
             # TODO: log completions, rewards, etc
             gen_dataset = Dataset.from_list(batch)
-            
+
             @torch.no_grad()
             def compute_ref_logps(examples):
                 device = self.accelerator.device
@@ -530,27 +535,31 @@ class FastGRPOTrainer(Trainer):
                 pad_token_id = self.processing_class.pad_token_id
                 padded_prompt_ids = pad(prompt_ids, padding_value=pad_token_id, padding_side="left")
                 padded_completion_ids = pad(completion_ids, padding_value=pad_token_id, padding_side="right")
-                
-                
+
                 input_ids = torch.cat([padded_prompt_ids, padded_completion_ids], dim=1)
-                attention_mask = torch.cat([padded_prompt_ids != pad_token_id, padded_completion_ids != pad_token_id], dim=1)
+                attention_mask = torch.cat(
+                    [padded_prompt_ids != pad_token_id, padded_completion_ids != pad_token_id], dim=1
+                )
                 logits_to_keep = torch.tensor(completion_lengths).to(device)
                 logits_to_keep = padded_completion_ids.size(1)
                 with torch.inference_mode():
                     ref_per_token_logps = self._get_per_token_logps(
                         self.ref_model, input_ids.to(device), attention_mask.to(device), logits_to_keep
                     )
-                ref_per_token_logps = ref_per_token_logps.to("cpu")    
-                examples["ref_per_token_logps"] = [logprobs[:length] for logprobs, length in zip(ref_per_token_logps, completion_lengths)]
-                
+                ref_per_token_logps = ref_per_token_logps.to("cpu")
+                examples["ref_per_token_logps"] = [
+                    logprobs[:length] for logprobs, length in zip(ref_per_token_logps, completion_lengths)
+                ]
+
                 return examples
-            
-            
+
             self.ref_model = self.ref_model.to(device)
             # precompute the ref logprobs and offload the model to cpu
-            gen_dataset = gen_dataset.map(compute_ref_logps, batched=True, batch_size=self.args.per_device_train_batch_size)
+            gen_dataset = gen_dataset.map(
+                compute_ref_logps, batched=True, batch_size=self.args.per_device_train_batch_size
+            )
             self.ref_model = self.ref_model.to("cpu")
-            
+
             # we could add some optimizations here like sorting the dataset by length to improve throughput, but we will keep it simple for now
             mini_batch_dataloader = DataLoader(
                 gen_dataset,
@@ -630,31 +639,24 @@ class FastGRPOTrainer(Trainer):
             self._save_checkpoint(self.model, trial=None, metrics=None)
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
 
-
-    def _optimization_step(self, mini_batch)-> tuple[float, float]:
+    def _optimization_step(self, mini_batch) -> tuple[float, float]:
         prompt_ids, prompt_mask = mini_batch["prompt_ids"], mini_batch["prompt_mask"]
         completion_ids, completion_mask = mini_batch["completion_ids"], mini_batch["completion_mask"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-        
+
         ref_per_token_logps = mini_batch["ref_per_token_logps"]
 
         with self.accelerator.accumulate(self.model):
-            per_token_logps = self._get_per_token_logps(
-                self.model, input_ids, attention_mask, logits_to_keep
-            )
+            per_token_logps = self._get_per_token_logps(self.model, input_ids, attention_mask, logits_to_keep)
             per_token_kl = (
-                torch.exp(ref_per_token_logps - per_token_logps)
-                - (ref_per_token_logps - per_token_logps)
-                - 1
+                torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
             )
 
             advantages = mini_batch["advantages"]
             # TODO: convert to clipped loss so we can multiple GRPO epochs
-            per_token_loss = -torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(
-                1
-            )
+            per_token_loss = -torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
             per_token_loss = per_token_loss + self.args.beta * per_token_kl
             loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
 
@@ -663,9 +665,9 @@ class FastGRPOTrainer(Trainer):
             self.optimizer.zero_grad()
 
         del per_token_logps, per_token_kl, per_token_loss, loss
-        
+
         # force garbage collection and empty cache
         gc.collect()
         torch.cuda.empty_cache()
-        
+
         return loss.detach().item(), per_token_kl.mean().item()
