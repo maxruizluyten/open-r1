@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional, Union
 
 import torch
+import transformers
 from datasets import Dataset
+from packaging import version
 from torch.utils.data import DataLoader, RandomSampler, Sampler
 from transformers import AutoModelForCausalLM, PreTrainedModel, Trainer, is_wandb_available
 from transformers.utils import is_liger_kernel_available
@@ -136,6 +138,8 @@ class RemoteGRPOTrainer(Trainer):
         callbacks,
     ):
         self.args = args
+        # Initialize the metrics
+        self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
         self.log_completions = args.log_completions
 
         # Training arguments
@@ -459,3 +463,19 @@ class RemoteGRPOTrainer(Trainer):
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
 
         return loss
+
+    def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
+        mode = "eval" if self.control.should_evaluate else "train"
+        metrics = {key: sum(val) / len(val) for key, val in self._metrics[mode].items()}  # average the metrics
+
+        # This method can be called both in training and evaluation. When called in evaluation, the keys in `logs`
+        # start with "eval_". We need to add the prefix "eval_" to the keys in `metrics` to match the format.
+        if mode == "eval":
+            metrics = {f"eval_{key}": val for key, val in metrics.items()}
+
+        logs = {**logs, **metrics}
+        if version.parse(transformers.__version__) >= version.parse("4.47.0.dev0"):
+            super().log(logs, start_time)
+        else:  # transformers<=4.46
+            super().log(logs)
+        self._metrics[mode].clear()
