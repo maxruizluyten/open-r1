@@ -23,10 +23,10 @@ echo "START TIME: $(date)"
 
 accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml --num_processes=7 scripts/remote_grpo.py \
     --config recipes/DeepSeek-R1-Distill-Qwen-1.5B/grpo/config_deepscaler.yaml \
-    --learning_rate 5.0e-7 \
+    --learning_rate 2.0e-6 \
     --hub_model_id open-r1/DeepSeek-R1-Distill-Qwen-1.5B-DeepScaler \
-    --hub_model_revision v01.00 \
-    --output_dir data/DeepSeek-R1-Distill-Qwen-1.5B-DeepScaler-v01.00 \
-    --run_name deepscaler-remote-v01.00 \
+    --hub_model_revision v01.02 \
+    --output_dir data/DeepSeek-R1-Distill-Qwen-1.5B-DeepScaler-v01.02 \
+    --run_name deepscaler-remote-v01.02 \
     --wandb_entity huggingface \
     --wandb_project open-r1
