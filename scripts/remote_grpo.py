@@ -15,14 +15,21 @@
 
 Usage:
 
+For training, run:
+
+accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml scripts/remote_grpo.py \
+    --config recipes/Qwen2.5-1.5B-Instruct/grpo/config_remote.yaml
+
+This will automatically spin up an SGLang server on a separate node and use it for generation.
+
 For development, first spin up SGLang sever on a separate node:
 
 python3 -m sglang.launch_server --model-path Qwen/Qwen2.5-1.5B-Instruct   --port=30010 --skip-tokenizer-init --mem-fraction-static 0.7 --host=0.0.0.0 --dp-size=8
 
-Then run training with
+Then run training with:
 
 accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml scripts/remote_grpo.py \
-    --config recipes/Qwen2.5-1.5B-Instruct/grpo/config_demo.yaml \
+    --config recipes/Qwen2.5-1.5B-Instruct/grpo/config_remote.yaml \
     --remote_gen_model_url ip-26-0-160-242
 """
 

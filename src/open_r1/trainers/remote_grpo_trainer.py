@@ -11,8 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import contextlib
-import functools
 import tempfile
 import time
 from collections import defaultdict
@@ -31,6 +29,7 @@ from accelerate.utils import broadcast_object_list, gather_object
 from open_r1.trainers.job_launcher import SGLangSlurmJobLauncher
 from open_r1.trainers.remote_model import RemoteModel
 from trl.data_utils import is_conversational, maybe_apply_chat_template
+from trl.extras.profiling import profiling_context, profiling_decorator
 from trl.trainer.utils import pad, selective_log_softmax
 
 
@@ -49,34 +48,6 @@ def exact_div(a, b, custom_error_message=""):
     if a != q * b:
         raise ValueError(f"{custom_error_message}, inexact division: {a} / {b} = {a / b}")
     return q
-
-
-@contextlib.contextmanager
-def profiling_context(instance, name):
-    """
-    A context manager function for profiling a block of code.
-    Can also be used as a decorator.
-    """
-    start_time = time.perf_counter()
-    yield
-    end_time = time.perf_counter()
-    duration = end_time - start_time
-
-    if "wandb" in instance.args.report_to and wandb.run is not None and instance.accelerator.is_main_process:
-        wandb.log({f"profiling/Time taken: {instance.__class__.__name__}.{name}": duration})
-
-
-def profiling_decorator(func):
-    """
-    Decorator to profile a function and log execution time using profiling_context.
-    """
-
-    @functools.wraps(func)
-    def wrapper(self, *args, **kwargs):
-        with profiling_context(self, func.__name__):
-            return func(self, *args, **kwargs)
-
-    return wrapper
 
 
 # TODO: add the shared options with a mixin to reduce code duplication
@@ -163,6 +134,7 @@ class RemoteGRPOTrainer(Trainer):
         callbacks,
     ):
         self.args = args
+        self.log_completions = args.log_completions
 
         # Reward functions
         if not isinstance(reward_funcs, list):
@@ -273,7 +245,7 @@ class RemoteGRPOTrainer(Trainer):
         if len(self.batch_buffer) > 0:
             return self.batch_buffer.pop(0)
 
-        prompts = [x["prompt"] for x in inputs]
+        prompts_to_log = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
         prompt_inputs = self.processing_class(prompts_text)
 
@@ -291,7 +263,7 @@ class RemoteGRPOTrainer(Trainer):
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
         repeated_prompts = []
-        for prompt in prompts:
+        for prompt in prompts_to_log:
             repeated_prompts.extend([prompt] * self.args.num_generations)
 
         repeated_prompt_texts = []
@@ -299,12 +271,12 @@ class RemoteGRPOTrainer(Trainer):
             repeated_prompt_texts.extend([prompt] * self.args.num_generations)
 
         if is_conversational(inputs[0]):
-            completions = []
+            completions_to_log = []
             for prompt, completion in zip(repeated_prompts, completions_text, strict=True):
                 bootstrap = prompt.pop()["content"] if prompt[-1]["role"] == "assistant" else ""
-                completions.append([{"role": "assistant", "content": bootstrap + completion}])
+                completions_to_log.append([{"role": "assistant", "content": bootstrap + completion}])
         else:
-            completions = completions_text
+            completions_to_log = completions_text
 
         rewards = torch.zeros(len(repeated_prompts), len(self.reward_funcs))
         for i, reward_func in enumerate(self.reward_funcs):
@@ -314,11 +286,11 @@ class RemoteGRPOTrainer(Trainer):
             for example in inputs:
                 for key in keys:
                     reward_kwargs[key].extend([example[key]] * self.args.num_generations)
-            output_reward_func = reward_func(prompts=repeated_prompts, completions=completions, **reward_kwargs)
+            output_reward_func = reward_func(prompts=repeated_prompts, completions=completions_to_log, **reward_kwargs)
             rewards[:, i] = torch.tensor(output_reward_func, dtype=torch.float32) * self.reward_weights[i]
 
         # calculate the advantages, the prompt is all on the same device to no need to gather here
-        grouped_rewards = rewards.sum(-1).view(len(prompts), self.args.num_generations)
+        grouped_rewards = rewards.sum(-1).view(len(prompts_to_log), self.args.num_generations)
         EPS = 1e-4
         grouped_advantages = (grouped_rewards - grouped_rewards.mean(-1, keepdim=True)) / (
             grouped_rewards.std(-1, keepdim=True) + EPS
@@ -360,22 +332,24 @@ class RemoteGRPOTrainer(Trainer):
 
         self.log(metrics)
 
-        if self.args.log_completions and "wandb" in self.args.report_to:
-            import pandas as pd
+        if self.log_completions and self.state.global_step % self.args.logging_steps == 0:
+            prompts_to_log = gather_object(gen_dataset["prompt"])
+            completions_to_log = gather_object(gen_dataset["completion"])
+            if self.accelerator.is_main_process:
+                if self.args.report_to and "wandb" in self.args.report_to and wandb.run is not None:
+                    import pandas as pd
 
-            prompts = gather_object(gen_dataset["prompt"])
-            completions = gather_object(gen_dataset["completion"])
-            # For logging
-            table = {
-                "step": [str(self.state.global_step)] * len(prompts),
-                "prompts": prompts,
-                "completion": completions,
-                "reward": gathered_rewards.sum(1).tolist(),
-            }
-            df = pd.DataFrame(table)
+                    # For logging
+                    table = {
+                        "step": [str(self.state.global_step)] * len(prompts_to_log),
+                        "prompts": prompts_to_log,
+                        "completion": completions_to_log,
+                        "reward": gathered_rewards.sum(1).tolist(),
+                    }
+                    df = pd.DataFrame(table)
 
-            if wandb.run is not None and self.accelerator.is_main_process:
-                wandb.log({"completions": wandb.Table(dataframe=df)})
+                    if wandb.run is not None and self.accelerator.is_main_process:
+                        wandb.log({"completions": wandb.Table(dataframe=df)})
 
         def mini_batch_collator(mini_batch):
             return mini_batch
@@ -383,7 +357,7 @@ class RemoteGRPOTrainer(Trainer):
         mini_batch_dataloader = DataLoader(
             gen_dataset,
             batch_size=self.args.per_device_train_batch_size,
-            shuffle=True,  # we technically don#t need to shuffle due to grad acc, but we may move to clipped loss later
+            shuffle=True,  # we technically don't need to shuffle due to grad acc, but we may move to clipped loss later
             drop_last=True,
             collate_fn=mini_batch_collator,
         )
