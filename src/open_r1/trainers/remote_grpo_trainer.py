@@ -124,6 +124,8 @@ class RemoteGRPOConfig(trl.GRPOConfig):
 
 
 class RemoteGRPOTrainer(Trainer):
+    _tag_names = ["trl", "grpo"]
+
     def __init__(
         self,
         model,
