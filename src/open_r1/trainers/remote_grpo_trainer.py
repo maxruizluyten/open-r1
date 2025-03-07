@@ -57,11 +57,11 @@ class RepeatBatchRandomSampler(RandomSampler):
     def __init__(
         self,
         *args,
-        num_generations: int = 1,
-        batch_size: int = 3,
+        mini_repeat_count: int = 1,
+        batch_size: int = 1,
         **kwargs,
     ) -> None:
-        self.num_generations = num_generations
+        self.mini_repeat_count = mini_repeat_count
         self.batch_size = batch_size
         super().__init__(*args, **kwargs)
 
@@ -138,6 +138,9 @@ class RemoteGRPOTrainer(Trainer):
         self.args = args
         self.log_completions = args.log_completions
 
+        # Training arguments
+        self.num_generations = args.num_generations  # = G in the GRPO paper
+
         # Reward functions
         if not isinstance(reward_funcs, list):
             reward_funcs = [reward_funcs]
@@ -163,7 +166,7 @@ class RemoteGRPOTrainer(Trainer):
             return features
 
         self.batch_buffer = []
-        self.grad_acc_scalar = exact_div(self.args.gradient_accumulation_steps, self.args.num_generations)
+        self.grad_acc_scalar = exact_div(self.args.gradient_accumulation_steps, self.num_generations)
 
         super().__init__(
             model,
@@ -239,7 +242,7 @@ class RemoteGRPOTrainer(Trainer):
         return RepeatBatchRandomSampler(
             data_source=self.train_dataset,
             batch_size=self._train_batch_size * self.grad_acc_scalar,
-            num_generations=self.args.num_generations,
+            mini_repeat_count=self.num_generations,
             replacement=False,
         )
 
@@ -259,18 +262,18 @@ class RemoteGRPOTrainer(Trainer):
                 prompt_ids,
                 max_new_tokens=self.args.max_completion_length,
                 temperature=self.args.temperature,
-                num_generations=self.args.num_generations,
+                num_generations=self.num_generations,
             )
         completion_ids = [example["completion_ids"] for example in all_outputs]
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
         repeated_prompts = []
         for prompt in prompts_to_log:
-            repeated_prompts.extend([prompt] * self.args.num_generations)
+            repeated_prompts.extend([prompt] * self.num_generations)
 
         repeated_prompt_texts = []
         for prompt in prompts_text:
-            repeated_prompt_texts.extend([prompt] * self.args.num_generations)
+            repeated_prompt_texts.extend([prompt] * self.num_generations)
 
         if is_conversational(inputs[0]):
             completions_to_log = []
@@ -287,12 +290,12 @@ class RemoteGRPOTrainer(Trainer):
             reward_kwargs = defaultdict(list)
             for example in inputs:
                 for key in keys:
-                    reward_kwargs[key].extend([example[key]] * self.args.num_generations)
+                    reward_kwargs[key].extend([example[key]] * self.num_generations)
             output_reward_func = reward_func(prompts=repeated_prompts, completions=completions_to_log, **reward_kwargs)
             rewards[:, i] = torch.tensor(output_reward_func, dtype=torch.float32) * self.reward_weights[i]
 
         # calculate the advantages, the prompt is all on the same device to no need to gather here
-        grouped_rewards = rewards.sum(-1).view(len(prompts_to_log), self.args.num_generations)
+        grouped_rewards = rewards.sum(-1).view(len(prompts_to_log), self.num_generations)
         EPS = 1e-4
         grouped_advantages = (grouped_rewards - grouped_rewards.mean(-1, keepdim=True)) / (
             grouped_rewards.std(-1, keepdim=True) + EPS
@@ -303,7 +306,7 @@ class RemoteGRPOTrainer(Trainer):
         for i, prompt in enumerate(repeated_prompt_texts):
             example = {
                 "prompt": prompt,
-                "prompt_ids": prompt_ids[i // self.args.num_generations],
+                "prompt_ids": prompt_ids[i // self.num_generations],
                 "completion": completions_text[i],
                 "completion_ids": completion_ids[i],
                 "advantages": advantages[i],

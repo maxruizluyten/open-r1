@@ -30,7 +30,7 @@ Then run training with:
 
 accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml scripts/remote_grpo.py \
     --config recipes/Qwen2.5-1.5B-Instruct/grpo/config_remote.yaml \
-    --remote_gen_model_url ip-26-0-160-242
+    --remote_gen_model_url ip-26-0-161-123
 """
 
 import logging
@@ -275,7 +275,7 @@ def main(script_args, training_args, model_args):
         "tags": ["open-r1"],
     }
     if trainer.accelerator.is_main_process:
-        trainer.create_model_card(**kwargs)
+        # trainer.create_model_card(**kwargs) # Bug: needs fixing with TRL helper methods
         # Restore k,v cache for fast inference
         trainer.model.config.use_cache = True
         trainer.model.config.save_pretrained(training_args.output_dir)

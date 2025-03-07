@@ -8,6 +8,11 @@
 #SBATCH --err=./logs/%x-%j.err
 #SBATCH --requeue
 
+"""Usage:
+
+sbatch --job-name=remote-grpo --nodes=1 slurm/train_remote.slurm Qwen2.5-1.5B-Instruct grpo remote zero3
+"""
+
 # Specific configuration optimized for the Hugging Face Compute Cluster
 # Be ye warned this may not work on other clusters!
 module load cuda/12.4
