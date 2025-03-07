@@ -13,58 +13,115 @@
 # limitations under the License.
 
 
+import contextlib
+import functools
+import gc
+import math
+import os
 import tempfile
 import time
+import accelerate
+from torch.utils.data import RandomSampler
+from typing import Iterator
+from transformers import AutoModelForCausalLM
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, Optional, Union
-
-import torch
-from datasets import Dataset
-from torch.utils.data import DataLoader, RandomSampler, Sampler
-from transformers import AutoModelForCausalLM, PreTrainedModel, Trainer, is_wandb_available
-from transformers.utils import is_liger_kernel_available
-
+from multiprocessing import reduction
+from typing import Callable, Optional, Union
+from unittest.mock import patch
 import deepspeed
+from confection import ARGS_FIELD_ALIAS
+from transformers.utils import is_liger_kernel_available
+import torch
+from copy import deepcopy
+from datasets import Dataset
+from accelerate.utils import broadcast_object_list
+from torch.utils.data import DataLoader
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    DataCollatorWithPadding,
+    GenerationConfig,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+    Trainer,
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
+    is_wandb_available,
+)
+from torch.utils.data import Sampler
+from typing import Any
+from transformers.integrations import get_reporting_integration_callbacks
+from transformers.trainer import DEFAULT_CALLBACKS, DEFAULT_PROGRESS_CALLBACK
+from transformers.trainer_callback import CallbackHandler, ExportableState, PrinterCallback
+from open_r1.trainers.job_launcher import SGLangSlurmJobLauncher
+
 import trl
-from accelerate.utils import broadcast_object_list, gather_object
+from accelerate import Accelerator
+from accelerate.utils import gather_object
 from open_r1.trainers.job_launcher import SGLangSlurmJobLauncher
 from open_r1.trainers.remote_model import RemoteModel
 from trl.data_utils import is_conversational, maybe_apply_chat_template
-from trl.extras.profiling import profiling_context, profiling_decorator
 from trl.trainer.utils import pad, selective_log_softmax
-
-
+from accelerate import Accelerator
+from trl import SFTTrainer
+from open_r1.trainers.special_dataloader import RemoteGRPODataloader
+from transformers import Trainer, TrainerCallback, TrainerControl, TrainerState
 if is_liger_kernel_available():
     from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
-from typing import Iterator, Optional
-
+from typing import Optional, Iterator, Sized
 
 if is_wandb_available():
     import wandb
-
-
 def exact_div(a, b, custom_error_message=""):
     q = a // b
     if a != q * b:
         raise ValueError(f"{custom_error_message}, inexact division: {a} / {b} = {a / b}")
     return q
 
+@contextlib.contextmanager
+def profiling_context(instance, name):
+    """
+    A context manager function for profiling a block of code.
+    Can also be used as a decorator.
+    """
+    start_time = time.perf_counter()
+    yield
+    end_time = time.perf_counter()
+    duration = end_time - start_time
+
+    if "wandb" in instance.args.report_to and wandb.run is not None and instance.accelerator.is_main_process:
+        wandb.log({f"profiling/Time taken: {instance.__class__.__name__}.{name}": duration})
+
+
+def profiling_decorator(func):
+    """
+    Decorator to profile a function and log execution time using profiling_context.
+    """
+
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        with profiling_context(self, func.__name__):
+            return func(self, *args, **kwargs)
+
+    return wrapper
+# TODO: add the shared options with a mixin to reduce code duplication
+
 
 class RepeatBatchRandomSampler(RandomSampler):
-    def __init__(
-        self,
-        *args,
-        num_generations: int = 1,
-        batch_size: int = 3,
-        **kwargs,
-    ) -> None:
+    def __init__(self, 
+                 *args,
+                num_generations: int = 1, 
+                batch_size: int = 3,  
+                 **kwargs,
+                 )-> None:
         self.num_generations = num_generations
         self.batch_size = batch_size
         super().__init__(*args, **kwargs)
-
+    
     def __len__(self) -> int:
         return super().__len__() * self.num_generations
 
@@ -76,7 +133,6 @@ class RepeatBatchRandomSampler(RandomSampler):
                 batch_indices = batch_indices * self.num_generations
                 yield from batch_indices
                 batch_indices = []
-
 
 @dataclass
 class RemoteGRPOConfig(trl.GRPOConfig):
@@ -91,7 +147,7 @@ class RemoteGRPOConfig(trl.GRPOConfig):
         default_factory=lambda: [], metadata={"help": "The callbacks to run during training."}
     )
     chat_template: Optional[str] = field(default=None, metadata={"help": "The chat template to use."})
-
+    
     system_prompt: Optional[str] = field(
         default=None, metadata={"help": "The optional system prompt to use for benchmarking."}
     )
@@ -124,17 +180,17 @@ class RemoteGRPOConfig(trl.GRPOConfig):
 
 
 class RemoteGRPOTrainer(Trainer):
-    def __init__(
-        self,
-        model,
-        reward_funcs: Union[RewardFunc, list[RewardFunc]],
-        args: RemoteGRPOConfig,
-        train_dataset,
-        processing_class,
-        callbacks,
-    ):
+    def __init__(self, model, 
+                 reward_funcs: Union[RewardFunc, list[RewardFunc]], 
+                 args: RemoteGRPOConfig, 
+                 train_dataset, 
+                 processing_class, 
+                 callbacks):
         self.args = args
+        
 
+
+        
         # Reward functions
         if not isinstance(reward_funcs, list):
             reward_funcs = [reward_funcs]
@@ -155,45 +211,36 @@ class RemoteGRPOTrainer(Trainer):
             model_path = model
             model = self._create_model_from_path(model_path, args)
             self.ref_model = self._create_model_from_path(model_path, args)
-
+            
+            
         def data_collator(features):  # No data collation is needed in GRPO
             return features
-
+        
         self.batch_buffer = []
         self.grad_acc_scalar = exact_div(self.args.gradient_accumulation_steps, self.args.num_generations)
-
-        super().__init__(
-            model,
-            args,
-            train_dataset=train_dataset,
-            processing_class=processing_class,
-            callbacks=callbacks,
-            data_collator=data_collator,
-        )
-
+            
+        super().__init__(model, args, train_dataset=train_dataset, processing_class=processing_class, callbacks=callbacks, data_collator=data_collator)
+        
         ip_address = self.args.remote_gen_model_url
-
+        
         if self.args.remote_gen_model_url is None and self.accelerator.is_main_process:
             # we launch a job from here, get the ip on main process and broadcast to others
             # it would be better to move this to the start so the server warms up which the local model is being loaded
             model_revision = args.model_init_kwargs.get("revision", "main")
             self.sglang_job_launcher = SGLangSlurmJobLauncher(
-                model_path,
-                model_revision,
-                num_gpus=self.args.remote_gen_model_n_gpus,
-                sglang_port=self.args.remote_gen_model_port,
+                model_path, model_revision, num_gpus=self.args.remote_gen_model_n_gpus, sglang_port=self.args.remote_gen_model_port
             )
             ip_address = self.sglang_job_launcher.launch()
 
         # get the ip from main process and broadcast to others
         gather_ip_address = broadcast_object_list([ip_address], 0)
         self.args.remote_gen_model_url = gather_ip_address[0]
-
+            
         self.remote_model = RemoteModel(
             self.args.remote_gen_model_url, self.args.remote_gen_model_port, self.processing_class.eos_token_id
         )
         self.remote_model.wait_for_server()
-
+        
     def _create_model_from_path(self, model_path: str, args) -> PreTrainedModel:
         """Creates a model from a path or model identifier."""
         model_init_kwargs = args.model_init_kwargs or {}
@@ -218,12 +265,12 @@ class RemoteGRPOTrainer(Trainer):
             if not is_liger_kernel_available():
                 raise ImportError("Please install Liger-kernel for use_liger=True")
             model = AutoLigerKernelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
-
+            
         else:
             model = AutoModelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
-
+            
         return model
-
+    
     def _get_train_sampler(self) -> Sampler:
         """
         Return the train sampler.
@@ -235,15 +282,14 @@ class RemoteGRPOTrainer(Trainer):
             raise ValueError("dataloader_num_workers should not be greater than 0 for remote training")
         return RepeatBatchRandomSampler(
             data_source=self.train_dataset,
-            batch_size=self._train_batch_size * self.grad_acc_scalar,
+            batch_size=self._train_batch_size *self.grad_acc_scalar,
             num_generations=self.args.num_generations,
             replacement=False,
         )
-
     def _prepare_inputs(self, inputs: dict[str, Union[torch.Tensor, Any]]) -> dict[str, Union[torch.Tensor, Any]]:
         if len(self.batch_buffer) > 0:
             return self.batch_buffer.pop(0)
-
+        
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
         prompt_inputs = self.processing_class(prompts_text)
@@ -309,12 +355,14 @@ class RemoteGRPOTrainer(Trainer):
             examples.append(example)
 
         gen_dataset = Dataset.from_list(examples)
-
+        
         # logging to wandb
         device = self.accelerator.device
         metrics = {}
         completion_lengths = [len(c) for c in gen_dataset["completion_ids"]]
-        gathered_completion_lengths = self.accelerator.gather_for_metrics(torch.Tensor(completion_lengths).to(device))
+        gathered_completion_lengths = self.accelerator.gather_for_metrics(
+            torch.Tensor(completion_lengths).to(device)
+        )
         metrics["mean_completion_lengths"] = gathered_completion_lengths.mean().item()
         metrics["max_completion_lengths"] = gathered_completion_lengths.max().item()
         metrics["min_completion_lengths"] = gathered_completion_lengths.min().item()
@@ -326,11 +374,11 @@ class RemoteGRPOTrainer(Trainer):
         for i, reward_func in enumerate(self.reward_funcs):
             reward_func_name = reward_func.__name__
             metrics[f"rewards/{reward_func_name}"] = reward_per_func[i].item()
-
+        
         metrics["reward"] = reward_per_func.sum().item()
 
         self.log(metrics)
-
+        
         if self.args.log_completions and "wandb" in self.args.report_to:
             import pandas as pd
 
@@ -347,10 +395,11 @@ class RemoteGRPOTrainer(Trainer):
 
             if wandb.run is not None and self.accelerator.is_main_process:
                 wandb.log({"completions": wandb.Table(dataframe=df)})
-
+        
+        
         def mini_batch_collator(mini_batch):
             return mini_batch
-
+        
         mini_batch_dataloader = DataLoader(
             gen_dataset,
             batch_size=self.args.per_device_train_batch_size,
@@ -358,12 +407,12 @@ class RemoteGRPOTrainer(Trainer):
             drop_last=True,
             collate_fn=mini_batch_collator,
         )
-
+        
         for mini_batch in mini_batch_dataloader:
             self.batch_buffer.append(mini_batch)
-
+        
         return self.batch_buffer.pop(0)
-
+    
     @profiling_decorator
     def _sync_weights(self):
         self.accelerator.wait_for_everyone()
@@ -371,23 +420,24 @@ class RemoteGRPOTrainer(Trainer):
         start = time.time()
         # would be better if this was a ram disk + separate thread for writing
         # TODO, we need multi-process tmp dir here
-
+        
         unwrapped_model = self.accelerator.unwrap_model(self.model)
         state_dict = {}
         for name, param in unwrapped_model.named_parameters():
             with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
                 state_dict[name] = param.cpu().detach().clone()
-
+        
+        
         # state_dict = self.accelerator.get_state_dict(self.deepspeed)
-
+        
         if self.accelerator.is_main_process:
-            with tempfile.TemporaryDirectory(dir="/fsx/h4/tmp/") as temp_dir_path:
+            with tempfile.TemporaryDirectory(dir="/fsx/edward/work/open-r1/data/") as temp_dir_path:
                 self._save(temp_dir_path, state_dict=state_dict)
                 self.remote_model.load_weights_from_path(temp_dir_path)
-
+            
             print("weight sync took: ", time.time() - start)
         self.accelerator.wait_for_everyone()
-
+        
     # Get the per-token log probabilities for the completions for the model and the reference model
     @profiling_decorator
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
@@ -400,23 +450,23 @@ class RemoteGRPOTrainer(Trainer):
         # See https://github.com/huggingface/trl/issues/2770
         logits = logits[:, -logits_to_keep:]
         return selective_log_softmax(logits, input_ids)  #  compute logprobs for the input tokens
-
+    
     @profiling_decorator
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         device = self.accelerator.device
         prompt_ids = [torch.LongTensor(example["prompt_ids"]) for example in inputs]
         completion_ids = [torch.LongTensor(example["completion_ids"]) for example in inputs]
         # ref_per_token_logps = [torch.Tensor(example["ref_per_token_logps"]) for example in inputs]
-
+        
         # for logps, completion_id in zip(ref_per_token_logps, completion_ids):
         #     assert len(logps) == len(completion_id), f"len(logps)={len(logps)} != len(completion_id)={len(completion_id)}"
-
+        
         pad_token_id = self.processing_class.pad_token_id
-
+        
         prompt_ids = pad(prompt_ids, padding_value=pad_token_id, padding_side="left")
         completion_ids = pad(completion_ids, padding_value=pad_token_id, padding_side="right")
         # padd_ref_per_token_logps = pad(ref_per_token_logps, padding_value=0.0, padding_side="right")
-
+        
         if self.args.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.args.max_prompt_length :]
 
@@ -430,24 +480,33 @@ class RemoteGRPOTrainer(Trainer):
         sequence_indices = torch.arange(is_eos.size(1)).expand(is_eos.size(0), -1)
         completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
 
-        advs = torch.Tensor([example["advantages"] for example in inputs])
-
+        advs = torch.Tensor([example["advantages"] for example in inputs])    
+        
+        
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1).to(device)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1).to(device)
-        completion_mask = completion_mask.to(device)
+        completion_mask =completion_mask.to(device)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-
+        
         # TODO: this could be precomputed at the generation stage with larger batches so the ref model can be unloaded
         with torch.inference_mode():
-            ref_per_token_logps = self._get_per_token_logps(self.model, input_ids, attention_mask, logits_to_keep)
+            ref_per_token_logps = self._get_per_token_logps(
+                self.model, input_ids, attention_mask, logits_to_keep
+            )
 
-        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+        per_token_logps = self._get_per_token_logps(
+            model, input_ids, attention_mask, logits_to_keep
+        )
         # TODO: add the reference model
-        per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+        per_token_kl = (
+            torch.exp(ref_per_token_logps - per_token_logps)
+            - (ref_per_token_logps - per_token_logps)
+            - 1
+        )
         advs = torch.Tensor([example["advantages"] for example in inputs]).to(device)
         # TODO: convert to clipped loss so we can multiple GRPO epochs
         per_token_loss = -torch.exp(per_token_logps - per_token_logps.detach()) * advs.unsqueeze(1)
         per_token_loss = per_token_loss + self.args.beta * per_token_kl
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
-
+        
         return loss
