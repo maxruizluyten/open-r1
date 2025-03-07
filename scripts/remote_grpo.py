@@ -11,6 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""GRPO trainer to train on N + 1 nodes, with 1 node allocated for generation.
+
+Usage:
+
+For development, first spin up SGLang sever on a separate node:
+
+python3 -m sglang.launch_server --model-path Qwen/Qwen2.5-1.5B-Instruct   --port=30010 --skip-tokenizer-init --mem-fraction-static 0.7 --host=0.0.0.0 --dp-size=8
+
+Then run training with
+
+accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml scripts/remote_grpo.py \
+    --config recipes/Qwen2.5-1.5B-Instruct/grpo/config_demo.yaml \
+    --remote_gen_model_url ip-26-0-160-242
+"""
 
 import logging
 import os
@@ -158,7 +172,6 @@ def main(script_args, training_args, model_args):
     tokenizer = get_tokenizer(model_args, training_args)
 
     # Get reward functions
-    # Get reward functions
     REWARD_FUNCS_REGISTRY = {
         "accuracy": accuracy_reward,
         "format": format_reward,
@@ -218,6 +231,8 @@ def main(script_args, training_args, model_args):
         reward_funcs=reward_funcs,
         args=training_args,
         train_dataset=dataset[script_args.dataset_train_split],
+        # eval_dataset=dataset[script_args.dataset_test_split] if training_args.eval_strategy != "no" else None,
+        # peft_config=get_peft_config(model_args),
         callbacks=get_callbacks(training_args, model_args),
         processing_class=tokenizer,
     )
@@ -232,11 +247,8 @@ def main(script_args, training_args, model_args):
     elif last_checkpoint is not None:
         checkpoint = last_checkpoint
 
-    from time import perf_counter
-    start = perf_counter()
+
     train_result = trainer.train(resume_from_checkpoint=checkpoint)
-    if trainer.accelerator.is_main_process:
-        print(f"Training took {perf_counter() - start:.2f} seconds or {(perf_counter() - start) / training_args.max_steps:.2f} s/it")
     metrics = train_result.metrics
     metrics["train_samples"] = len(dataset[script_args.dataset_train_split])
     trainer.log_metrics("train", metrics)

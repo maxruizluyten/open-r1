@@ -231,15 +231,7 @@ def main(script_args, training_args, model_args):
         checkpoint = training_args.resume_from_checkpoint
     elif last_checkpoint is not None:
         checkpoint = last_checkpoint
-
-    from time import perf_counter
-
-    start = perf_counter()
     train_result = trainer.train(resume_from_checkpoint=checkpoint)
-    if trainer.accelerator.is_main_process:
-        print(
-            f"Training took {perf_counter() - start:.2f} seconds or {(perf_counter() - start) / training_args.max_steps:.2f} s/it"
-        )
     metrics = train_result.metrics
     metrics["train_samples"] = len(dataset[script_args.dataset_train_split])
     trainer.log_metrics("train", metrics)
