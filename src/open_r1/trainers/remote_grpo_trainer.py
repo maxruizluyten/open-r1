@@ -40,15 +40,17 @@ from open_r1.trainers.job_launcher import SGLangSlurmJobLauncher
 from open_r1.trainers.remote_model import RemoteModel
 from trl.data_utils import is_conversational, maybe_apply_chat_template
 from trl.extras.profiling import profiling_context, profiling_decorator
-from trl.models import create_reference_model
-from trl.trainer.utils import pad, selective_log_softmax
+from trl.import_utils import is_rich_available
+from trl.models import create_reference_model, prepare_deepspeed
+from trl.trainer.callbacks import SyncRefModelCallback
+from trl.trainer.utils import pad, print_prompt_completions_sample, selective_log_softmax
 
 
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
 
-if is_liger_kernel_available():
-    from liger_kernel.transformers import AutoLigerKernelForCausalLM
+# if is_liger_kernel_available():
+#     from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
@@ -273,6 +275,23 @@ class RemoteGRPOTrainer(Trainer):
         )
         self.remote_model.wait_for_server()
 
+        # Gradient accumulation requires scaled loss. Normally, loss scaling in the parent class depends on whether the
+        # model accepts loss-related kwargs. Since we compute our own loss, this check is irrelevant. We set
+        # self.model_accepts_loss_kwargs to False to enable scaling.
+        self.model_accepts_loss_kwargs = False
+
+        # Add tags to the model
+        self.model.add_model_tags(self._tag_names)
+
+        if self.ref_model is not None:
+            if self.is_deepspeed_enabled:
+                self.ref_model = prepare_deepspeed(self.ref_model, self.accelerator)
+            else:
+                self.ref_model = self.accelerator.prepare_model(self.ref_model, evaluation_mode=True)
+
+        if args.sync_ref_model:
+            self.add_callback(SyncRefModelCallback(ref_model=self.ref_model, accelerator=self.accelerator))
+
     # def _create_model_from_path(self, model_path: str, args) -> PreTrainedModel:
     #     """Creates a model from a path or model identifier."""
     #     model_init_kwargs = args.model_init_kwargs or {}
@@ -437,6 +456,13 @@ class RemoteGRPOTrainer(Trainer):
             prompts_to_log = gather_object(gen_dataset["prompt"])
             completions_to_log = gather_object(gen_dataset["completion"])
             if self.accelerator.is_main_process:
+                if is_rich_available():
+                    print_prompt_completions_sample(
+                        prompts_to_log,
+                        completions_to_log,
+                        gathered_rewards.sum(1).tolist(),
+                        self.state.global_step,
+                    )
                 if self.args.report_to and "wandb" in self.args.report_to and wandb.run is not None:
                     import pandas as pd
 
