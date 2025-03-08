@@ -107,6 +107,7 @@ install_requires = [
     deps["math-verify"],
     deps["liger_kernel"],
     deps["packaging"],  # utilities from PyPA to e.g., compare versions
+    deps["peft"],
     deps["safetensors"],
     deps["sentencepiece"],
     deps["transformers"],

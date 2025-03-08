@@ -22,15 +22,15 @@ accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml scripts/re
 
 This will automatically spin up an SGLang server on a separate node and use it for generation.
 
-For development, first spin up SGLang sever on a separate node:
+For development, first spin up an SGLang sever on a separate node:
 
 python3 -m sglang.launch_server --model-path Qwen/Qwen2.5-1.5B-Instruct   --port=30010 --skip-tokenizer-init --mem-fraction-static 0.7 --host=0.0.0.0 --dp-size=8
 
-Then run training with:
+Then run training by providing the IP address of the server:
 
 accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml scripts/remote_grpo.py \
     --config recipes/Qwen2.5-1.5B-Instruct/grpo/config_remote.yaml \
-    --remote_gen_model_url ip-26-0-161-123
+    --remote_gen_model_url ip-26-0-160-225
 """
 
 import logging
@@ -45,7 +45,6 @@ from datasets import load_dataset
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
-from open_r1.configs import GRPOConfig
 from open_r1.rewards import (
     accuracy_reward,
     code_reward,
@@ -60,7 +59,7 @@ from open_r1.rewards import (
 from open_r1.utils import get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
-from trl import GRPOTrainer, ModelConfig, ScriptArguments, TrlParser, get_peft_config
+from trl import ModelConfig, ScriptArguments, TrlParser
 from open_r1.trainers.remote_grpo_trainer import RemoteGRPOTrainer, RemoteGRPOConfig
 
 

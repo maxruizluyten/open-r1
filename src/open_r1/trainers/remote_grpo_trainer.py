@@ -19,21 +19,33 @@ from typing import Any, Callable, Iterator, Optional, Union
 
 import torch
 import transformers
-from datasets import Dataset
+from datasets import Dataset, IterableDataset
 from packaging import version
 from torch.utils.data import DataLoader, RandomSampler, Sampler
-from transformers import AutoModelForCausalLM, PreTrainedModel, Trainer, is_wandb_available
-from transformers.utils import is_liger_kernel_available
+from transformers import (
+    AutoModelForCausalLM,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+    Trainer,
+    TrainerCallback,
+    is_wandb_available,
+)
+from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+from transformers.utils import is_liger_kernel_available, is_peft_available
 
 import deepspeed
 import trl
-from accelerate.utils import broadcast_object_list, gather_object
+from accelerate.utils import broadcast_object_list, gather_object, is_peft_model
 from open_r1.trainers.job_launcher import SGLangSlurmJobLauncher
 from open_r1.trainers.remote_model import RemoteModel
 from trl.data_utils import is_conversational, maybe_apply_chat_template
 from trl.extras.profiling import profiling_context, profiling_decorator
+from trl.models import create_reference_model
 from trl.trainer.utils import pad, selective_log_softmax
 
+
+if is_peft_available():
+    from peft import PeftConfig, get_peft_model
 
 if is_liger_kernel_available():
     from liger_kernel.transformers import AutoLigerKernelForCausalLM
@@ -130,12 +142,16 @@ class RemoteGRPOTrainer(Trainer):
 
     def __init__(
         self,
-        model,
+        model: Union[str, PreTrainedModel],
         reward_funcs: Union[RewardFunc, list[RewardFunc]],
-        args: RemoteGRPOConfig,
-        train_dataset,
-        processing_class,
-        callbacks,
+        args: Optional[RemoteGRPOConfig] = None,
+        train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
+        eval_dataset: Optional[Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]] = None,
+        processing_class: Optional[PreTrainedTokenizerBase] = None,
+        reward_processing_classes: Optional[Union[PreTrainedTokenizerBase, list[PreTrainedTokenizerBase]]] = None,
+        callbacks: Optional[list[TrainerCallback]] = None,
+        optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
+        peft_config: Optional["PeftConfig"] = None,
     ):
         self.args = args
         # Initialize the metrics
@@ -144,6 +160,59 @@ class RemoteGRPOTrainer(Trainer):
 
         # Training arguments
         self.num_generations = args.num_generations  # = G in the GRPO paper
+
+        # Models
+        # Trained model
+        model_init_kwargs = args.model_init_kwargs or {}
+        if isinstance(model, str):
+            model_id = model
+            torch_dtype = model_init_kwargs.get("torch_dtype")
+            if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
+                pass  # torch_dtype is already a torch.dtype or "auto" or None
+            elif isinstance(torch_dtype, str):  # it's a str, but not "auto"
+                torch_dtype = getattr(torch, torch_dtype)
+                model_init_kwargs["torch_dtype"] = torch_dtype
+            else:
+                raise ValueError(
+                    "Invalid `torch_dtype` passed to `GRPOConfig`. Expected either 'auto' or a string representing "
+                    f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
+                )
+            # Disable caching if gradient checkpointing is enabled (not supported)
+            model_init_kwargs["use_cache"] = (
+                False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
+            )
+            model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
+        else:
+            model_id = model.config._name_or_path
+            if args.model_init_kwargs is not None:
+                raise ValueError(
+                    "You passed `model_init_kwargs` to the `GRPOConfig`, but your model is already instantiated. "
+                    "This argument can only be used when the `model` argument is a string."
+                )
+
+        if peft_config is not None:
+            if not is_peft_available():
+                raise ImportError("PEFT is required to use `peft_config`. Run `pip install peft`.")
+            model = get_peft_model(model, peft_config)
+
+        # Enable gradient checkpointing if requested
+        if args.gradient_checkpointing:
+            model = self._enable_gradient_checkpointing(model, args)
+
+        # Reference model
+        self.beta = args.beta
+        if self.beta == 0.0:
+            # If beta is 0.0, the reference model is not needed
+            self.ref_model = None
+        elif is_deepspeed_zero3_enabled():
+            self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)
+        elif is_peft_model(model):
+            # If PEFT is used, the reference model is not needed since the adapter can be disabled
+            # to revert to the initial model.
+            self.ref_model = None
+        else:
+            # If PEFT configuration is not provided, create a reference model based on the initial model.
+            self.ref_model = create_reference_model(model)
 
         # Reward functions
         if not isinstance(reward_funcs, list):
@@ -160,11 +229,11 @@ class RemoteGRPOTrainer(Trainer):
             self.reward_weights = torch.tensor(args.reward_weights, dtype=torch.float32)
         else:
             self.reward_weights = torch.ones(len(reward_funcs), dtype=torch.float32)
-        self.model_name_or_path = model
-        if isinstance(model, str):
-            model_path = model
-            model = self._create_model_from_path(model_path, args)
-            self.ref_model = self._create_model_from_path(model_path, args)
+        # self.model_name_or_path = model
+        # if isinstance(model, str):
+        #     model_path = model
+        #     model = self._create_model_from_path(model_path, args)
+        #     self.ref_model = self._create_model_from_path(model_path, args)
 
         def data_collator(features):  # No data collation is needed in GRPO
             return features
@@ -188,7 +257,7 @@ class RemoteGRPOTrainer(Trainer):
             # it would be better to move this to the start so the server warms up which the local model is being loaded
             model_revision = args.model_init_kwargs.get("revision", "main")
             self.sglang_job_launcher = SGLangSlurmJobLauncher(
-                model_path,
+                model_id,
                 model_revision,
                 num_gpus=self.args.remote_gen_model_n_gpus,
                 sglang_port=self.args.remote_gen_model_port,
@@ -204,35 +273,35 @@ class RemoteGRPOTrainer(Trainer):
         )
         self.remote_model.wait_for_server()
 
-    def _create_model_from_path(self, model_path: str, args) -> PreTrainedModel:
-        """Creates a model from a path or model identifier."""
-        model_init_kwargs = args.model_init_kwargs or {}
-        # Handle torch dtype
-        torch_dtype = model_init_kwargs.get("torch_dtype")
-        if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
-            pass  # torch_dtype is already a torch.dtype or "auto" or None
-        elif isinstance(torch_dtype, str):  # it's a str, but not "auto"
-            torch_dtype = getattr(torch, torch_dtype)
-            model_init_kwargs["torch_dtype"] = torch_dtype
-        else:
-            raise ValueError(
-                "Invalid `torch_dtype` passed to `SFTConfig`. Expected either 'auto' or a string representing "
-                f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
-            )
-        # Disable caching if gradient checkpointing is enabled (not supported)
-        if args.gradient_checkpointing:
-            model_init_kwargs["use_cache"] = False
+    # def _create_model_from_path(self, model_path: str, args) -> PreTrainedModel:
+    #     """Creates a model from a path or model identifier."""
+    #     model_init_kwargs = args.model_init_kwargs or {}
+    #     # Handle torch dtype
+    #     torch_dtype = model_init_kwargs.get("torch_dtype")
+    #     if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
+    #         pass  # torch_dtype is already a torch.dtype or "auto" or None
+    #     elif isinstance(torch_dtype, str):  # it's a str, but not "auto"
+    #         torch_dtype = getattr(torch, torch_dtype)
+    #         model_init_kwargs["torch_dtype"] = torch_dtype
+    #     else:
+    #         raise ValueError(
+    #             "Invalid `torch_dtype` passed to `SFTConfig`. Expected either 'auto' or a string representing "
+    #             f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
+    #         )
+    #     # Disable caching if gradient checkpointing is enabled (not supported)
+    #     if args.gradient_checkpointing:
+    #         model_init_kwargs["use_cache"] = False
 
-        # Create model
-        if args.use_liger:
-            if not is_liger_kernel_available():
-                raise ImportError("Please install Liger-kernel for use_liger=True")
-            model = AutoLigerKernelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
+    #     # Create model
+    #     if args.use_liger:
+    #         if not is_liger_kernel_available():
+    #             raise ImportError("Please install Liger-kernel for use_liger=True")
+    #         model = AutoLigerKernelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
 
-        else:
-            model = AutoModelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
+    #     else:
+    #         model = AutoModelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
 
-        return model
+    #     return model
 
     def _get_train_sampler(self) -> Sampler:
         """
@@ -249,6 +318,28 @@ class RemoteGRPOTrainer(Trainer):
             mini_repeat_count=self.num_generations,
             replacement=False,
         )
+
+    def _enable_gradient_checkpointing(self, model: PreTrainedModel, args: RemoteGRPOConfig) -> PreTrainedModel:
+        """Enables gradient checkpointing for the model."""
+        # Ensure use_cache is disabled
+        model.config.use_cache = False
+
+        # Enable gradient checkpointing on the base model for PEFT
+        if is_peft_model(model):
+            model.base_model.gradient_checkpointing_enable()
+        # Enable gradient checkpointing for non-PEFT models
+        else:
+            model.gradient_checkpointing_enable()
+
+        gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs or {}
+        use_reentrant = (
+            "use_reentrant" not in gradient_checkpointing_kwargs or gradient_checkpointing_kwargs["use_reentrant"]
+        )
+
+        if use_reentrant:
+            model.enable_input_require_grads()
+
+        return model
 
     def _prepare_inputs(self, inputs: dict[str, Union[torch.Tensor, Any]]) -> dict[str, Union[torch.Tensor, Any]]:
         if len(self.batch_buffer) > 0:
@@ -320,26 +411,27 @@ class RemoteGRPOTrainer(Trainer):
 
         gen_dataset = Dataset.from_list(examples)
 
-        # logging to wandb
+        # Instead of logging metrics here, collect them
+        mode = "eval" if getattr(self, "control", None) and self.control.should_evaluate else "train"
         device = self.accelerator.device
-        metrics = {}
+
+        # Collect completion length metrics
         completion_lengths = [len(c) for c in gen_dataset["completion_ids"]]
         gathered_completion_lengths = self.accelerator.gather_for_metrics(torch.Tensor(completion_lengths).to(device))
-        metrics["mean_completion_lengths"] = gathered_completion_lengths.mean().item()
-        metrics["max_completion_lengths"] = gathered_completion_lengths.max().item()
-        metrics["min_completion_lengths"] = gathered_completion_lengths.min().item()
+        self._metrics[mode]["mean_completion_lengths"].append(gathered_completion_lengths.mean().item())
+        self._metrics[mode]["max_completion_lengths"].append(gathered_completion_lengths.max().item())
+        self._metrics[mode]["min_completion_lengths"].append(gathered_completion_lengths.min().item())
 
-        # reward stats
-        rewards = gen_dataset["rewards"]
-        gathered_rewards = self.accelerator.gather_for_metrics(torch.Tensor(rewards).to(device))
+        # Collect reward metrics
+        rewards = torch.stack([torch.tensor(example["rewards"], device=device) for example in examples])
+        gathered_rewards = self.accelerator.gather_for_metrics(rewards)
         reward_per_func = gathered_rewards.mean(0)
+
         for i, reward_func in enumerate(self.reward_funcs):
             reward_func_name = reward_func.__name__
-            metrics[f"rewards/{reward_func_name}"] = reward_per_func[i].item()
+            self._metrics[mode][f"rewards/{reward_func_name}"].append(reward_per_func[i].item())
 
-        metrics["reward"] = reward_per_func.sum().item()
-
-        self.log(metrics)
+        self._metrics[mode]["reward"].append(reward_per_func.sum().item())
 
         if self.log_completions and self.state.global_step % self.args.logging_steps == 0:
             prompts_to_log = gather_object(gen_dataset["prompt"])
