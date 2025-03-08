@@ -442,7 +442,14 @@ class RemoteGRPOTrainer(Trainer):
         self._metrics[mode]["min_completion_lengths"].append(gathered_completion_lengths.min().item())
 
         # Collect reward metrics
-        rewards = torch.stack([torch.tensor(example["rewards"], device=device) for example in examples])
+        rewards = torch.stack(
+            [
+                example["rewards"].to(device)
+                if isinstance(example["rewards"], torch.Tensor)
+                else torch.tensor(example["rewards"], device=device)
+                for example in examples
+            ]
+        )
         gathered_rewards = self.accelerator.gather_for_metrics(rewards)
         reward_per_func = gathered_rewards.mean(0)
 
@@ -457,10 +464,11 @@ class RemoteGRPOTrainer(Trainer):
             completions_to_log = gather_object(gen_dataset["completion"])
             if self.accelerator.is_main_process:
                 if is_rich_available():
+                    # TODO: enable num_samples in TRL to avoid clogging logs
                     print_prompt_completions_sample(
-                        prompts_to_log,
-                        completions_to_log,
-                        gathered_rewards.sum(1).tolist(),
+                        prompts_to_log[:5],
+                        completions_to_log[:5],
+                        gathered_rewards.sum(1).tolist()[:5],
                         self.state.global_step,
                     )
                 if self.args.report_to and "wandb" in self.args.report_to and wandb.run is not None:
