@@ -24,6 +24,7 @@ from packaging import version
 from torch.utils.data import DataLoader, RandomSampler, Sampler
 from transformers import (
     AutoModelForCausalLM,
+    AutoTokenizer,
     PreTrainedModel,
     PreTrainedTokenizerBase,
     Trainer,
@@ -107,7 +108,9 @@ class RemoteGRPOConfig(trl.GRPOConfig):
         default_factory=lambda: [], metadata={"help": "The callbacks to run during training."}
     )
     chat_template: Optional[str] = field(default=None, metadata={"help": "The chat template to use."})
-
+    checkpoint_dir: Optional[str] = field(
+        default="/fsx/h4/tmp/", metadata={"help": "The directory to save temporary checkpoints to."}
+    )
     system_prompt: Optional[str] = field(
         default=None, metadata={"help": "The optional system prompt to use for benchmarking."}
     )
@@ -711,10 +714,8 @@ class RemoteGRPOTrainer(Trainer):
             with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
                 state_dict[name] = param.cpu().detach().clone()
 
-        # state_dict = self.accelerator.get_state_dict(self.deepspeed)
-
         if self.accelerator.is_main_process:
-            with tempfile.TemporaryDirectory(dir="/fsx/h4/tmp/") as temp_dir_path:
+            with tempfile.TemporaryDirectory(dir=self.args.checkpoint_dir) as temp_dir_path:
                 self._save(temp_dir_path, state_dict=state_dict)
                 self.remote_model.load_weights_from_path(temp_dir_path)
 

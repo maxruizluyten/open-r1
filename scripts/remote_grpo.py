@@ -30,7 +30,7 @@ Then run training by providing the IP address of the server:
 
 accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml scripts/remote_grpo.py \
     --config recipes/Qwen2.5-1.5B-Instruct/grpo/config_remote.yaml \
-    --remote_gen_model_url ip-26-0-160-242
+    --remote_gen_model_url ip-26-0-160-103
 """
 
 import logging
