@@ -50,8 +50,8 @@ from trl.trainer.utils import pad, print_prompt_completions_sample, selective_lo
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
 
-# if is_liger_kernel_available():
-#     from liger_kernel.transformers import AutoLigerKernelForCausalLM
+if is_liger_kernel_available():
+    from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
@@ -195,7 +195,12 @@ class RemoteGRPOTrainer(Trainer):
             model_init_kwargs["use_cache"] = (
                 False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
             )
-            model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
+            if args.use_liger:
+                if not is_liger_kernel_available():
+                    raise ImportError("Please install Liger-kernel for use_liger=True")
+                model = AutoLigerKernelForCausalLM.from_pretrained(model, **model_init_kwargs)
+            else:
+                model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
         else:
             model_id = model.config._name_or_path
             if args.model_init_kwargs is not None:
