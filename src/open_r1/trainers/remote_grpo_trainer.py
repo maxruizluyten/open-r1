@@ -376,8 +376,7 @@ class RemoteGRPOTrainer(Trainer):
     def _generate_and_score_completions(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
-        if len(self.batch_buffer) > 0:
-            return self.batch_buffer.pop(0)
+
 
         prompts_to_log = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
@@ -503,16 +502,32 @@ class RemoteGRPOTrainer(Trainer):
 
     @profiling_decorator
     def _prepare_inputs(self, inputs: dict[str, Union[torch.Tensor, Any]]) -> dict[str, Union[torch.Tensor, Any]]:
-        mode = "eval" if self.control.should_evaluate else "train"
-
+        if len(self.batch_buffer) > 0:
+            return self.batch_buffer.pop(0)
         inputs = self._generate_and_score_completions(inputs)
-
         gen_dataset = Dataset.from_list(inputs)
+        exact_div(len(gen_dataset), self.args.per_device_train_batch_size, "len(gen_dataset) is not divisible by batch size")
+
+        def get_ref_logprobs(example):
+            # dict of lists to list of dicts
+            examples = [dict(zip(example.keys(), values)) for values in zip(*example.values())]
+            input_ids, attention_mask, completion_mask, completion_ids = self._get_padded_inputs_and_attn_mask(examples)
+            logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+
+            with torch.no_grad():
+                ref_per_token_logps = self._get_per_token_logps(self.ref_model, input_ids, attention_mask, logits_to_keep)
+
+            lengths = [len(example["completion_ids"]) for example in examples]
+            # STRIP OFF THE COMPLETION MASK
+            ref_per_token_logps = ref_per_token_logps.to("cpu").tolist()
+            ref_per_token_logps = [logps[:length] for logps, length in zip(ref_per_token_logps, lengths)]
+            example["ref_per_token_logps"] = ref_per_token_logps
+            return example
+        
+        gen_dataset = gen_dataset.map(get_ref_logprobs, batched=True, batch_size=self.args.per_device_train_batch_size)
 
         def mini_batch_collator(mini_batch):
             return mini_batch
-
-        exact_div(len(gen_dataset), self.args.per_device_train_batch_size, "len(gen_dataset) is not divisible by batch size")
 
         mini_batch_dataloader = DataLoader(
             gen_dataset,
@@ -538,10 +553,14 @@ class RemoteGRPOTrainer(Trainer):
         # TODO, we need multi-process tmp dir here
 
         unwrapped_model = self.accelerator.unwrap_model(self.model)
-        state_dict = {}
-        for name, param in unwrapped_model.named_parameters():
-            with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
-                state_dict[name] = param.cpu().detach().clone()
+        
+        if is_deepspeed_zero3_enabled():
+            state_dict = {}
+            for name, param in unwrapped_model.named_parameters():
+                with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
+                    state_dict[name] = param.cpu().detach().clone()
+        else:
+            state_dict = unwrapped_model.state_dict()
 
         if self.accelerator.is_main_process:
             with tempfile.TemporaryDirectory(dir=self.args.checkpoint_dir) as temp_dir_path:
@@ -564,8 +583,8 @@ class RemoteGRPOTrainer(Trainer):
         logits = logits[:, -logits_to_keep:]
         return selective_log_softmax(logits, input_ids)  #  compute logprobs for the input tokens
 
-    @profiling_decorator
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+
+    def _get_padded_inputs_and_attn_mask(self, inputs):
         device = self.accelerator.device
         prompt_ids = [torch.LongTensor(example["prompt_ids"]) for example in inputs]
         completion_ids = [torch.LongTensor(example["completion_ids"]) for example in inputs]
@@ -593,22 +612,34 @@ class RemoteGRPOTrainer(Trainer):
         sequence_indices = torch.arange(is_eos.size(1)).expand(is_eos.size(0), -1)
         completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
 
-        advs = torch.Tensor([example["advantages"] for example in inputs])
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1).to(device)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1).to(device)
         completion_mask = completion_mask.to(device)
-        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+        
+        return input_ids, attention_mask, completion_mask, completion_ids
 
-        # TODO: this could be precomputed at the generation stage with larger batches so the ref model can be unloaded
-        with torch.inference_mode():
-            ref_per_token_logps = self._get_per_token_logps(self.model, input_ids, attention_mask, logits_to_keep)
+    @profiling_decorator
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        device = self.accelerator.device
+        advs = torch.Tensor([example["advantages"] for example in inputs]).to(device)
+        input_ids, attention_mask, completion_mask, completion_ids = self._get_padded_inputs_and_attn_mask(inputs)
+        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+        
+        
+        ref_per_token_logps = [torch.Tensor(example["ref_per_token_logps"]) for example in inputs]
+
+        # Sanity check: ensure that the number of log probabilities matches the number of tokens in the completion, can be removed later
+        for logps, inp in zip(ref_per_token_logps, inputs):
+            assert len(logps) == len(inp["completion_ids"]), f"len(logps)={len(logps)} != len(completion_id)={len(inp['completion_ids'])}"
+        pad_token_id = self.processing_class.pad_token_id
+        
+        pad_ref_per_token_logps = pad(ref_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
 
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
-        # TODO: add the reference model
-        per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
-        advs = torch.Tensor([example["advantages"] for example in inputs]).to(device)
-        # TODO: convert to clipped loss so we can multiple GRPO epochs
+        per_token_kl = torch.exp(pad_ref_per_token_logps - per_token_logps) - (pad_ref_per_token_logps - per_token_logps) - 1
+
+        # TODO: convert to clipped loss so we can run multiple GRPO epochs
         per_token_loss = -torch.exp(per_token_logps - per_token_logps.detach()) * advs.unsqueeze(1)
         per_token_loss = per_token_loss + self.args.beta * per_token_kl
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
