@@ -83,14 +83,14 @@ class RepeatBatchRandomSampler(RandomSampler):
         super().__init__(*args, **kwargs)
 
     def __len__(self) -> int:
-        return super().__len__() * self.num_generations
+        return super().__len__() * self.mini_repeat_count
 
     def __iter__(self) -> Iterator[int]:
         batch_indices = []
         for idx in super().__iter__():
             batch_indices.append(idx)
             if len(batch_indices) == self.batch_size:
-                batch_indices = batch_indices * self.num_generations
+                batch_indices = batch_indices * self.mini_repeat_count
                 yield from batch_indices
                 batch_indices = []
 
@@ -335,36 +335,6 @@ class RemoteGRPOTrainer(Trainer):
         if args.sync_ref_model:
             self.add_callback(SyncRefModelCallback(ref_model=self.ref_model, accelerator=self.accelerator))
 
-    # def _create_model_from_path(self, model_path: str, args) -> PreTrainedModel:
-    #     """Creates a model from a path or model identifier."""
-    #     model_init_kwargs = args.model_init_kwargs or {}
-    #     # Handle torch dtype
-    #     torch_dtype = model_init_kwargs.get("torch_dtype")
-    #     if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
-    #         pass  # torch_dtype is already a torch.dtype or "auto" or None
-    #     elif isinstance(torch_dtype, str):  # it's a str, but not "auto"
-    #         torch_dtype = getattr(torch, torch_dtype)
-    #         model_init_kwargs["torch_dtype"] = torch_dtype
-    #     else:
-    #         raise ValueError(
-    #             "Invalid `torch_dtype` passed to `SFTConfig`. Expected either 'auto' or a string representing "
-    #             f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
-    #         )
-    #     # Disable caching if gradient checkpointing is enabled (not supported)
-    #     if args.gradient_checkpointing:
-    #         model_init_kwargs["use_cache"] = False
-
-    #     # Create model
-    #     if args.use_liger:
-    #         if not is_liger_kernel_available():
-    #             raise ImportError("Please install Liger-kernel for use_liger=True")
-    #         model = AutoLigerKernelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
-
-    #     else:
-    #         model = AutoModelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
-
-    #     return model
-
     def _get_train_sampler(self) -> Sampler:
         """
         Return the train sampler.
@@ -534,21 +504,15 @@ class RemoteGRPOTrainer(Trainer):
     @profiling_decorator
     def _prepare_inputs(self, inputs: dict[str, Union[torch.Tensor, Any]]) -> dict[str, Union[torch.Tensor, Any]]:
         mode = "eval" if self.control.should_evaluate else "train"
-        if mode == "train":
-            if self.state.global_step % self.num_iterations == 0:
-                inputs = self._generate_and_score_completions(inputs)
-                self._buffered_inputs[self._step % self.args.gradient_accumulation_steps] = inputs
-            else:
-                inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]
-            self._step += 1
-        else:
-            # In evaluation, we don't reuse completions across multiple updates, so we don't need to buffer inputs.
-            inputs = self._generate_and_score_completions(inputs)
+
+        inputs = self._generate_and_score_completions(inputs)
 
         gen_dataset = Dataset.from_list(inputs)
 
         def mini_batch_collator(mini_batch):
             return mini_batch
+
+        exact_div(len(gen_dataset), self.args.per_device_train_batch_size, "len(gen_dataset) is not divisible by batch size")
 
         mini_batch_dataloader = DataLoader(
             gen_dataset,
@@ -563,147 +527,7 @@ class RemoteGRPOTrainer(Trainer):
 
         return self.batch_buffer.pop(0)
 
-    # def _prepare_inputs(self, inputs: dict[str, Union[torch.Tensor, Any]]) -> dict[str, Union[torch.Tensor, Any]]:
-    #     if len(self.batch_buffer) > 0:
-    #         return self.batch_buffer.pop(0)
 
-    #     prompts_to_log = [x["prompt"] for x in inputs]
-    #     prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
-    #     prompt_inputs = self.processing_class(prompts_text)
-
-    #     prompt_ids = prompt_inputs["input_ids"]
-    #     # sync weights here?
-    #     self._sync_weights()
-    #     with profiling_context(self, "remote_generate"):
-    #         all_outputs = self.remote_model.generate(
-    #             prompt_ids,
-    #             max_new_tokens=self.args.max_completion_length,
-    #             temperature=self.args.temperature,
-    #             num_generations=self.num_generations,
-    #         )
-    #     completion_ids = [example["completion_ids"] for example in all_outputs]
-    #     completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
-
-    #     repeated_prompts = []
-    #     for prompt in prompts_to_log:
-    #         repeated_prompts.extend([prompt] * self.num_generations)
-
-    #     repeated_prompt_texts = []
-    #     for prompt in prompts_text:
-    #         repeated_prompt_texts.extend([prompt] * self.num_generations)
-
-    #     if is_conversational(inputs[0]):
-    #         completions_to_log = []
-    #         for prompt, completion in zip(repeated_prompts, completions_text, strict=True):
-    #             bootstrap = prompt.pop()["content"] if prompt[-1]["role"] == "assistant" else ""
-    #             completions_to_log.append([{"role": "assistant", "content": bootstrap + completion}])
-    #     else:
-    #         completions_to_log = completions_text
-
-    #     rewards = torch.zeros(len(repeated_prompts), len(self.reward_funcs))
-    #     for i, reward_func in enumerate(self.reward_funcs):
-    #         # Repeat all input columns (but "prompt" and "completion") to match the number of generations
-    #         keys = [key for key in inputs[0] if key not in ["prompt", "completion"]]
-    #         reward_kwargs = defaultdict(list)
-    #         for example in inputs:
-    #             for key in keys:
-    #                 reward_kwargs[key].extend([example[key]] * self.num_generations)
-    #         output_reward_func = reward_func(prompts=repeated_prompts, completions=completions_to_log, **reward_kwargs)
-    #         rewards[:, i] = torch.tensor(output_reward_func, dtype=torch.float32) * self.reward_weights[i]
-
-    #     # calculate the advantages, the prompt is all on the same device to no need to gather here
-    #     grouped_rewards = rewards.sum(-1).view(len(prompts_to_log), self.num_generations)
-    #     EPS = 1e-4
-    #     grouped_advantages = (grouped_rewards - grouped_rewards.mean(-1, keepdim=True)) / (
-    #         grouped_rewards.std(-1, keepdim=True) + EPS
-    #     )
-    #     advantages = grouped_advantages.flatten().tolist()
-
-    #     examples = []
-    #     for i, prompt in enumerate(repeated_prompt_texts):
-    #         example = {
-    #             "prompt": prompt,
-    #             "prompt_ids": prompt_ids[i // self.num_generations],
-    #             "completion": completions_text[i],
-    #             "completion_ids": completion_ids[i],
-    #             "advantages": advantages[i],
-    #             "rewards": rewards[i],
-    #         }
-    #         examples.append(example)
-
-    #     gen_dataset = Dataset.from_list(examples)
-
-    #     # Instead of logging metrics here, collect them
-    #     mode = "eval" if getattr(self, "control", None) and self.control.should_evaluate else "train"
-    #     device = self.accelerator.device
-
-    #     # Collect completion length metrics
-    #     completion_lengths = [len(c) for c in gen_dataset["completion_ids"]]
-    #     gathered_completion_lengths = self.accelerator.gather_for_metrics(torch.Tensor(completion_lengths).to(device))
-    #     self._metrics[mode]["mean_completion_lengths"].append(gathered_completion_lengths.mean().item())
-    #     self._metrics[mode]["max_completion_lengths"].append(gathered_completion_lengths.max().item())
-    #     self._metrics[mode]["min_completion_lengths"].append(gathered_completion_lengths.min().item())
-
-    #     # Collect reward metrics
-    #     rewards = torch.stack(
-    #         [
-    #             example["rewards"].to(device)
-    #             if isinstance(example["rewards"], torch.Tensor)
-    #             else torch.tensor(example["rewards"], device=device)
-    #             for example in examples
-    #         ]
-    #     )
-    #     gathered_rewards = self.accelerator.gather_for_metrics(rewards)
-    #     reward_per_func = gathered_rewards.mean(0)
-
-    #     for i, reward_func in enumerate(self.reward_funcs):
-    #         reward_func_name = reward_func.__name__
-    #         self._metrics[mode][f"rewards/{reward_func_name}"].append(reward_per_func[i].item())
-
-    #     self._metrics[mode]["reward"].append(reward_per_func.sum().item())
-
-    #     if self.log_completions and self.state.global_step % self.args.logging_steps == 0:
-    #         prompts_to_log = gather_object(gen_dataset["prompt"])
-    #         completions_to_log = gather_object(gen_dataset["completion"])
-    #         if self.accelerator.is_main_process:
-    #             if is_rich_available():
-    #                 # TODO: enable num_samples in TRL to avoid clogging logs
-    #                 print_prompt_completions_sample(
-    #                     prompts_to_log[:5],
-    #                     completions_to_log[:5],
-    #                     gathered_rewards.sum(1).tolist()[:5],
-    #                     self.state.global_step,
-    #                 )
-    #             if self.args.report_to and "wandb" in self.args.report_to and wandb.run is not None:
-    #                 import pandas as pd
-
-    #                 # For logging
-    #                 table = {
-    #                     "step": [str(self.state.global_step)] * len(prompts_to_log),
-    #                     "prompts": prompts_to_log,
-    #                     "completion": completions_to_log,
-    #                     "reward": gathered_rewards.sum(1).tolist(),
-    #                 }
-    #                 df = pd.DataFrame(table)
-
-    #                 if wandb.run is not None and self.accelerator.is_main_process:
-    #                     wandb.log({"completions": wandb.Table(dataframe=df)})
-
-    #     def mini_batch_collator(mini_batch):
-    #         return mini_batch
-
-    #     mini_batch_dataloader = DataLoader(
-    #         gen_dataset,
-    #         batch_size=self.args.per_device_train_batch_size,
-    #         shuffle=True,  # we technically don't need to shuffle due to grad acc, but we may move to clipped loss later
-    #         drop_last=True,
-    #         collate_fn=mini_batch_collator,
-    #     )
-
-    #     for mini_batch in mini_batch_dataloader:
-    #         self.batch_buffer.append(mini_batch)
-
-    #     return self.batch_buffer.pop(0)
 
     @profiling_decorator
     def _sync_weights(self):
