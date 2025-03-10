@@ -33,12 +33,12 @@ logging_strategy: steps
 lr_scheduler_type: cosine_with_min_lr
 lr_scheduler_kwargs:
   min_lr_rate: 0.1
-packing: true
+packing: false
 max_grad_norm: 0.2
-max_length: 32768
+max_length: 23552 # Any larger gives OOM
 max_steps: -1
 num_train_epochs: 10
-# optim: paged_adamw_8bit
+optim: paged_adamw_8bit
 output_dir: data/open-r1/Qwen2.5-Coder-32B-Instruct-SFT-v00.00
 overwrite_output_dir: true
 per_device_eval_batch_size: 1
