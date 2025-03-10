@@ -20,6 +20,7 @@ from datasets import enable_progress_bars, disable_progress_bars
 import torch
 import transformers
 from datasets import Dataset, IterableDataset
+from datasets.utils.logging import set_verbosity_error, set_verbosity_info
 from packaging import version
 from torch.utils.data import DataLoader, RandomSampler, Sampler
 from transformers import (
@@ -67,32 +68,39 @@ def exact_div(a, b, custom_error_message=""):
     return q
 
 
-# TODO: add the shared options with a mixin to reduce code duplication
-
-
-class RepeatBatchRandomSampler(RandomSampler):
+class RepeatRandomSampler2(Sampler):
     def __init__(
         self,
-        *args,
-        mini_repeat_count: int = 1,
+        data_source,
         batch_size: int = 1,
-        **kwargs,
-    ) -> None:
-        self.mini_repeat_count = mini_repeat_count
+        num_processes:int = 1,
+        repeat_count: int = 1,
+        seed: Optional[int] = None,
+    ):
+        self.data_source = data_source
         self.batch_size = batch_size
-        super().__init__(*args, **kwargs)
+        self.num_processes = num_processes
+        self.repeat_count = repeat_count
+        self.num_samples = len(data_source)
+        self.seed = seed
+        self.generator = torch.Generator()  # Create a local random generator
+        if seed is not None:
+            self.generator.manual_seed(seed)
+
+    def __iter__(self):
+        indices = torch.randperm(self.num_samples, generator=self.generator).tolist()
+        all_process_batch_size = self.batch_size * self.num_processes
+        indices = [indices[i : i + all_process_batch_size] for i in range(0, len(indices), all_process_batch_size)]
+
+        indices = [chunk for chunk in indices if len(chunk) == all_process_batch_size]
+
+        for chunk in indices:
+            for _ in range(self.repeat_count):
+                for index in chunk:
+                    yield index
 
     def __len__(self) -> int:
-        return super().__len__() * self.mini_repeat_count
-
-    def __iter__(self) -> Iterator[int]:
-        batch_indices = []
-        for idx in super().__iter__():
-            batch_indices.append(idx)
-            if len(batch_indices) == self.batch_size:
-                batch_indices = batch_indices * self.mini_repeat_count
-                yield from batch_indices
-                batch_indices = []
+        return self.num_samples * self.repeat_count
 
 
 @dataclass
@@ -162,18 +170,6 @@ class RemoteGRPOTrainer(Trainer):
         # Initialize the metrics
         self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
         self.log_completions = args.log_completions
-
-        # Training arguments
-        self.num_generations = args.num_generations  # = G in the GRPO paper
-
-        # Multi-step
-        self.num_iterations = args.num_iterations  # = 𝜇 in the GRPO paper
-        self.epsilon = args.epsilon
-        # Tracks the number of iterations (forward + backward passes), including those within a gradient accumulation cycle.
-        self._step = 0
-        # Buffer the batch to reuse generated outputs across multiple updates. For more details, see
-        # `_get_train_sampler` and `_prepare_inputs`.
-        self._buffered_inputs = [None] * args.gradient_accumulation_steps
 
         # Models
         # Trained model
@@ -282,7 +278,11 @@ class RemoteGRPOTrainer(Trainer):
             return features
 
         self.batch_buffer = []
-        self.grad_acc_scalar = exact_div(self.args.gradient_accumulation_steps, self.num_generations)
+        # if self.args.gradient_accumulation_steps > self.args.num_generations:
+        #     # If gradient accumulation steps is greater than num generations, we can generate even more samples per batch to speed up training
+        #     self.grad_acc_scalar = exact_div(self.args.gradient_accumulation_steps, self.args.num_generations)
+        # else:
+        #     self.grad_acc_scalar = 1
 
         super().__init__(
             model,
@@ -344,11 +344,18 @@ class RemoteGRPOTrainer(Trainer):
         """
         if self.args.dataloader_num_workers != 0:
             raise ValueError("dataloader_num_workers should not be greater than 0 for remote training")
-        return RepeatBatchRandomSampler(
+        # return RepeatBatchRandomSampler(
+        #     data_source=self.train_dataset,
+        #     batch_size=self._train_batch_size * self.grad_acc_scalar,
+        #     mini_repeat_count=self.args.num_generations * self.args.num_iterations,
+        #     replacement=False,
+        # )
+        return RepeatRandomSampler2(
             data_source=self.train_dataset,
-            batch_size=self._train_batch_size * self.grad_acc_scalar,
-            mini_repeat_count=self.num_generations,
-            replacement=False,
+            batch_size=self._train_batch_size,
+            repeat_count=self.args.num_generations * self.args.num_iterations,
+            num_processes=self.accelerator.num_processes,
+            seed=self.args.seed,
         )
 
     def _enable_gradient_checkpointing(self, model: PreTrainedModel, args: RemoteGRPOConfig) -> PreTrainedModel:
@@ -388,18 +395,18 @@ class RemoteGRPOTrainer(Trainer):
                 prompt_ids,
                 max_new_tokens=self.args.max_completion_length,
                 temperature=self.args.temperature,
-                num_generations=self.num_generations,
+                num_generations=self.args.num_generations,
             )
         completion_ids = [example["completion_ids"] for example in all_outputs]
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
 
         repeated_prompts = []
         for prompt in prompts_to_log:
-            repeated_prompts.extend([prompt] * self.num_generations)
+            repeated_prompts.extend([prompt] * self.args.num_generations)
 
         repeated_prompt_texts = []
         for prompt in prompts_text:
-            repeated_prompt_texts.extend([prompt] * self.num_generations)
+            repeated_prompt_texts.extend([prompt] * self.args.num_generations)
 
         if is_conversational(inputs[0]):
             completions_to_log = []
@@ -416,12 +423,12 @@ class RemoteGRPOTrainer(Trainer):
             reward_kwargs = defaultdict(list)
             for example in inputs:
                 for key in keys:
-                    reward_kwargs[key].extend([example[key]] * self.num_generations)
+                    reward_kwargs[key].extend([example[key]] * self.args.num_generations)
             output_reward_func = reward_func(prompts=repeated_prompts, completions=completions_to_log, **reward_kwargs)
             rewards[:, i] = torch.tensor(output_reward_func, dtype=torch.float32) * self.reward_weights[i]
 
         # calculate the advantages, the prompt is all on the same device to no need to gather here
-        grouped_rewards = rewards.sum(-1).view(len(prompts_to_log), self.num_generations)
+        grouped_rewards = rewards.sum(-1).view(len(prompts_to_log), self.args.num_generations)
         EPS = 1e-4
         grouped_advantages = (grouped_rewards - grouped_rewards.mean(-1, keepdim=True)) / (
             grouped_rewards.std(-1, keepdim=True) + EPS
@@ -432,7 +439,7 @@ class RemoteGRPOTrainer(Trainer):
         for i, prompt in enumerate(repeated_prompt_texts):
             example = {
                 "prompt": prompt,
-                "prompt_ids": prompt_ids[i // self.num_generations],
+                "prompt_ids": prompt_ids[i // self.args.num_generations],
                 "completion": completions_text[i],
                 "completion_ids": completion_ids[i],
                 "advantages": advantages[i],
@@ -506,25 +513,28 @@ class RemoteGRPOTrainer(Trainer):
         gen_dataset = Dataset.from_list(inputs)
         exact_div(len(gen_dataset), self.args.per_device_train_batch_size, "len(gen_dataset) is not divisible by batch size")
 
-        def get_ref_logprobs(example):
+        def get_logprobs(example, model, output_name):
             # dict of lists to list of dicts
             examples = [dict(zip(example.keys(), values)) for values in zip(*example.values())]
             input_ids, attention_mask, completion_mask, completion_ids = self._get_padded_inputs_and_attn_mask(examples)
             logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
             with torch.no_grad():
-                ref_per_token_logps = self._get_per_token_logps(self.ref_model, input_ids, attention_mask, logits_to_keep)
+                per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
 
             lengths = [len(example["completion_ids"]) for example in examples]
             # STRIP OFF THE COMPLETION MASK
-            ref_per_token_logps = ref_per_token_logps.to("cpu").tolist()
-            ref_per_token_logps = [logps[:length] for logps, length in zip(ref_per_token_logps, lengths)]
-            example["ref_per_token_logps"] = ref_per_token_logps
+            per_token_logps = per_token_logps.to("cpu").tolist()
+            per_token_logps = [logps[:length] for logps, length in zip(per_token_logps, lengths)]
+            example[output_name] = per_token_logps
             return example
         
+        set_verbosity_error()
         disable_progress_bars()
-        gen_dataset = gen_dataset.map(get_ref_logprobs, batched=True, batch_size=self.args.per_device_train_batch_size)
+        gen_dataset = gen_dataset.map(get_logprobs, batched=True, batch_size=self.args.per_device_train_batch_size, fn_kwargs={"model": self.ref_model, "output_name": "ref_per_token_logps"})
+        gen_dataset = gen_dataset.map(get_logprobs, batched=True, batch_size=self.args.per_device_train_batch_size, fn_kwargs={"model": self.model, "output_name": "old_per_token_logps"})
         enable_progress_bars()
+        set_verbosity_info()
 
         def mini_batch_collator(mini_batch):
             return mini_batch
@@ -536,9 +546,9 @@ class RemoteGRPOTrainer(Trainer):
             drop_last=True,
             collate_fn=mini_batch_collator,
         )
-
-        for mini_batch in mini_batch_dataloader:
-            self.batch_buffer.append(mini_batch)
+        for num_iters in range(self.args.num_iterations):
+            for mini_batch in mini_batch_dataloader:
+                self.batch_buffer.append(mini_batch)
 
         return self.batch_buffer.pop(0)
 
@@ -622,26 +632,34 @@ class RemoteGRPOTrainer(Trainer):
     @profiling_decorator
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         device = self.accelerator.device
-        advs = torch.Tensor([example["advantages"] for example in inputs]).to(device)
+        advantages = torch.Tensor([example["advantages"] for example in inputs]).to(device)
         input_ids, attention_mask, completion_mask, completion_ids = self._get_padded_inputs_and_attn_mask(inputs)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         
         
         ref_per_token_logps = [torch.Tensor(example["ref_per_token_logps"]) for example in inputs]
+        old_per_token_logps = [torch.Tensor(example["old_per_token_logps"]) for example in inputs]
 
         # Sanity check: ensure that the number of log probabilities matches the number of tokens in the completion, can be removed later
         for logps, inp in zip(ref_per_token_logps, inputs):
             assert len(logps) == len(inp["completion_ids"]), f"len(logps)={len(logps)} != len(completion_id)={len(inp['completion_ids'])}"
         pad_token_id = self.processing_class.pad_token_id
         
+        # padd the ref and old logps
         pad_ref_per_token_logps = pad(ref_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
+        pad_old_per_token_logps = pad(old_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
 
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
         per_token_kl = torch.exp(pad_ref_per_token_logps - per_token_logps) - (pad_ref_per_token_logps - per_token_logps) - 1
-
-        # TODO: convert to clipped loss so we can run multiple GRPO epochs
-        per_token_loss = -torch.exp(per_token_logps - per_token_logps.detach()) * advs.unsqueeze(1)
+        
+        # clipped loss
+        coef_1 = torch.exp(per_token_logps - pad_old_per_token_logps)
+        coef_2 = torch.clamp(coef_1, 1 - self.args.epsilon, 1 + self.args.epsilon)
+        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)        
         per_token_loss = per_token_loss + self.args.beta * per_token_kl
+        
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
 
         return loss
