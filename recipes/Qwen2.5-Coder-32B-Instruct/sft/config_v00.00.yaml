@@ -38,7 +38,7 @@ max_grad_norm: 0.2
 max_length: 32768
 max_steps: -1
 num_train_epochs: 10
-optim: adamw_bnb_8bit
+# optim: paged_adamw_8bit
 output_dir: data/open-r1/Qwen2.5-Coder-32B-Instruct-SFT-v00.00
 overwrite_output_dir: true
 per_device_eval_batch_size: 1
