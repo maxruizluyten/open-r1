@@ -16,7 +16,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional, Union
-
+from datasets import enable_progress_bars, disable_progress_bars
 import torch
 import transformers
 from datasets import Dataset, IterableDataset
@@ -376,8 +376,6 @@ class RemoteGRPOTrainer(Trainer):
     def _generate_and_score_completions(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
-
-
         prompts_to_log = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
         prompt_inputs = self.processing_class(prompts_text)
@@ -524,7 +522,9 @@ class RemoteGRPOTrainer(Trainer):
             example["ref_per_token_logps"] = ref_per_token_logps
             return example
         
+        disable_progress_bars()
         gen_dataset = gen_dataset.map(get_ref_logprobs, batched=True, batch_size=self.args.per_device_train_batch_size)
+        enable_progress_bars()
 
         def mini_batch_collator(mini_batch):
             return mini_batch
