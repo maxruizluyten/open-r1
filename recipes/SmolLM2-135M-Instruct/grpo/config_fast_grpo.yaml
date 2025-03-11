@@ -17,7 +17,7 @@ vllm_gpu_memory_utilization: 0.8
 bf16: true
 do_eval: false
 eval_strategy: "no"
-gradient_accumulation_steps: 16
+gradient_accumulation_steps: 8
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
@@ -32,14 +32,14 @@ max_prompt_length: 1024
 max_completion_length: 2048
 max_steps: -1
 num_train_epochs: 0.1
-num_generations: 32
+num_generations: 4
 output_dir: data/open-r1/SmolLM2-135M-Instruct-GRPO-v00.01
 overwrite_output_dir: true
 per_device_eval_batch_size: 4
 per_device_train_batch_size: 8
 push_to_hub: true
 beta: 0.04
-
+remote_gen_model_url: 0.0.0.0
 reward_funcs:
 - accuracy
 - format

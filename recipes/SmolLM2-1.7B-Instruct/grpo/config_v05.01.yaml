@@ -1,6 +1,6 @@
 # Model arguments
-model_name_or_path: HuggingFaceTB/SmolLM2-1.7B-Instruct 
-model_revision: main
+model_name_or_path: open-r1/SMOLLM_I8k-GR2-deepseek
+model_revision: main-step-000000300
 torch_dtype: bfloat16
 attn_implementation: flash_attention_2
 # Data training arguments
@@ -21,27 +21,24 @@ gradient_accumulation_steps: 16
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
-hub_model_id: open-r1/SmolLM2-1.7B-Instruct-GRPO-v05.19
+hub_model_id: open-r1/SmolLM2-1.7B-Instruct-GRPO-v05.01
 hub_strategy: every_save
 learning_rate: 1.0e-04
 log_level: info
-logging_first_step: true
 logging_steps: 1
 logging_strategy: steps
 lr_scheduler_type: cosine
 max_prompt_length: 1024
-max_completion_length: 7172
+max_completion_length: 7168
 max_steps: -1
-num_train_epochs: 1.0
+num_train_epochs: 0.5
 num_generations: 16
-output_dir: data/open-r1/SmolLM2-1.7B-Instruct-GRPO-v05.19
+output_dir: data/open-r1/SmolLM2-1.7B-Instruct-GRPO-v05.01
 overwrite_output_dir: true
 per_device_eval_batch_size: 4
 per_device_train_batch_size: 8
 push_to_hub: true
-beta: 0.01
-remote_gen_model_url: 26.0.160.225
-num_iterations: 4
+beta: 0.0
 
 reward_funcs:
 - accuracy
@@ -62,9 +59,5 @@ warmup_ratio: 0.02
 # Saving and eval callbacks
 save_strategy: "steps"
 save_steps: 10
-# callbacks:
-# - push_to_hub_revision
-# benchmarks:
-# - math_500
-# - aime24
-system_prompt: "You are a helpful AI Assistant that provides well-reasoned and detailed responses. You first think about the reasoning process as an internal monologue and then provide the user with the answer. Respond in the following format: <think>\n...\n</think>\n<answer>\n...\n</answer>"
+callbacks:
+- push_to_hub_revision
