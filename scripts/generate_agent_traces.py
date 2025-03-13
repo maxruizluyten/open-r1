@@ -36,8 +36,9 @@ class ModifiedFinalAnswerTool(Tool):
     output_type = "string"
 
     def forward(self, answer_function: Any) -> str:
-        print("USING MODIFIED FINAL ANSWER TOOL")
-        return inspect.getsource(answer_function)
+        source_code = inspect.getsource(answer_function)
+        print("USING MODIFIED FINAL ANSWER TOOL, got source code:\n", source_code)
+        return source_code
 
     def __init__(self, *args, **kwargs):
         self.is_initialized = False
@@ -110,11 +111,10 @@ def get_agent_run(session, task, args):
         max_steps=10,
         verbosity_level=2
     )
-    
+
     try:
         output = agent.run(task)
-        print("GOT OUTPUT:", output)
-        return agent.write_memory_to_messages()
+        return agent.write_memory_to_messages(), output
     except Exception as e:
         print(f"Error when generating agentic trace: {e}")
         return None
@@ -122,7 +122,7 @@ def get_agent_run(session, task, args):
 def process_example(example, session, args, output_file, pbar=None):
     prompt = f"""Here is a task to solve using a function:
     {example[args.prompt_column]}
-    
+
     Now write a function that solves the problem, test it and return it using final_answer(your_function).
     The function should take the inputs described in the task above, using them in this way: the function will be passed the 'lines' described in the task as different arguments.
     For instance:
@@ -132,29 +132,28 @@ def process_example(example, session, args, output_file, pbar=None):
     ALWAYS RUN THE FUNCTION IN A CODE SNIPPET WITH TEST CASES BEFORE RETURNING IT.
     """
     try:
-        agent_runs = []
+        agent_outputs, agent_memories = [], []
         for _ in range(args.num_generations):
-            agent_run = get_agent_run(session, prompt, args)
-            agent_runs.append(agent_run)
+            agent_output, agent_memory = get_agent_run(session, prompt, args)
+            agent_outputs.append(agent_output)
+            agent_memories.append(agent_memory)
 
-        if any(agent_run is None for agent_run in agent_runs):
+        if any(agent_output is None for agent_output in agent_outputs):
             print("Error processing example")
             if pbar:
                 pbar.update(1)
             return None
 
-        generations = []
         finish_reasons = []
         api_metadata = []
 
-        for agent_run in agent_runs:
-            generations.append(agent_run)
+        for agent_run in agent_output:
             finish_reasons.append(None)
             api_metadata.append(None)
 
         # Convert agent_run to a serializable format
         serializable_generations = []
-        for generation in generations:
+        for generation in agent_memories:
             if generation is not None:
                 # Convert to a simple list of dictionaries if it's not already
                 if isinstance(generation, list):
@@ -167,11 +166,12 @@ def process_example(example, session, args, output_file, pbar=None):
                     serializable_generations.append(str(generation))
             else:
                 serializable_generations.append(None)
-                
+
         # Combine original dataset fields with generations
         result = {
             **example,  # Preserve all original dataset fields
             "generations": serializable_generations,
+            "final_outputs": agent_outputs,
             "finish_reasons": finish_reasons,
             "api_metadata": api_metadata,
         }
