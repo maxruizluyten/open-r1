@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import tempfile
+import json
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -426,6 +427,18 @@ class RemoteGRPOTrainer(Trainer):
                     reward_kwargs[key].extend([example[key]] * self.args.num_generations)
             output_reward_func = reward_func(prompts=repeated_prompts, completions=completions_to_log, **reward_kwargs)
             rewards[:, i] = torch.tensor(output_reward_func, dtype=torch.float32) * self.reward_weights[i]
+            
+            if i == 0 and self.accelerator.is_main_process: # dump generations to a text file for debugging
+                with open("python_code_completions2.jsonl", "a") as f:
+                    for i,(p, c) in enumerate(zip(repeated_prompts, completions_to_log)):
+                        data = {
+                            "prompt": p,
+                            "completion": c,
+                        }
+                        for k in reward_kwargs.keys():
+                            data[k] = reward_kwargs[k][i]
+                        
+                        f.write(json.dumps(data) + "\n")
 
         # calculate the advantages, the prompt is all on the same device to no need to gather here
         grouped_rewards = rewards.sum(-1).view(len(prompts_to_log), self.args.num_generations)
@@ -567,8 +580,13 @@ class RemoteGRPOTrainer(Trainer):
         if is_deepspeed_zero3_enabled():
             state_dict = {}
             for name, param in unwrapped_model.named_parameters():
-                with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
-                    state_dict[name] = param.cpu().detach().clone()
+                if name in state_dict.keys():
+                    # sometimes the embed table is duplicated so no need to regather it
+                    continue
+                # the else should not be required here but I had a weird bug.
+                else:
+                    with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
+                        state_dict[name] = param.cpu().detach().clone()
         else:
             state_dict = unwrapped_model.state_dict()
 
