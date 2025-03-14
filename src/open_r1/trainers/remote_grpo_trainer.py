@@ -11,16 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import tempfile
 import json
+import tempfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional, Union
-from datasets import enable_progress_bars, disable_progress_bars
+
 import torch
 import transformers
-from datasets import Dataset, IterableDataset
+from datasets import Dataset, IterableDataset, disable_progress_bars, enable_progress_bars
 from datasets.utils.logging import set_verbosity_error, set_verbosity_info
 from packaging import version
 from torch.utils.data import DataLoader, RandomSampler, Sampler
@@ -46,11 +46,8 @@ from trl.extras.profiling import profiling_context, profiling_decorator
 from trl.import_utils import is_rich_available
 from trl.models import create_reference_model, prepare_deepspeed
 from trl.trainer.callbacks import SyncRefModelCallback
-from trl.trainer.utils import pad, print_prompt_completions_sample, selective_log_softmax, exact_div
+from trl.trainer.utils import exact_div, pad, print_prompt_completions_sample, selective_log_softmax
 
-
-if is_peft_available():
-    from peft import PeftConfig, get_peft_model
 
 if is_liger_kernel_available():
     from liger_kernel.transformers import AutoLigerKernelForCausalLM
@@ -66,7 +63,7 @@ class RepeatBatchRandomSampler(Sampler):
         self,
         data_source,
         batch_size: int = 1,
-        num_processes:int = 1,
+        num_processes: int = 1,
         repeat_count: int = 1,
         seed: Optional[int] = None,
     ):
@@ -157,7 +154,6 @@ class RemoteGRPOTrainer(Trainer):
         reward_processing_classes: Optional[Union[PreTrainedTokenizerBase, list[PreTrainedTokenizerBase]]] = None,
         callbacks: Optional[list[TrainerCallback]] = None,
         optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
-        peft_config: Optional["PeftConfig"] = None,
     ):
         self.args = args
         # Initialize the metrics
@@ -211,8 +207,7 @@ class RemoteGRPOTrainer(Trainer):
         model.warnings_issued["estimate_tokens"] = True
 
         # Reference model
-        self.beta = args.beta
-        if self.beta == 0.0:
+        if self.args.beta == 0.0:
             # If beta is 0.0, the reference model is not needed
             self.ref_model = None
         elif is_deepspeed_zero3_enabled():
@@ -248,6 +243,7 @@ class RemoteGRPOTrainer(Trainer):
             if len(reward_processing_classes) != len(reward_funcs):
                 raise ValueError("The number of reward processing classes must match the number of reward functions.")
 
+        # TODO: test RMS and also wrap them in deepspeed
         for i, (reward_processing_class, reward_func) in enumerate(zip(reward_processing_classes, reward_funcs)):
             if isinstance(reward_func, PreTrainedModel):
                 if reward_processing_class is None:
@@ -262,7 +258,6 @@ class RemoteGRPOTrainer(Trainer):
 
         def data_collator(features):  # No data collation is needed in GRPO
             return features
-
 
         super().__init__(
             model,
@@ -400,7 +395,7 @@ class RemoteGRPOTrainer(Trainer):
                     reward_kwargs[key].extend([example[key]] * self.args.num_generations)
             output_reward_func = reward_func(prompts=repeated_prompts, completions=completions_to_log, **reward_kwargs)
             rewards[:, i] = torch.tensor(output_reward_func, dtype=torch.float32) * self.reward_weights[i]
-            
+
             # if i == 0 and self.accelerator.is_main_process: # dump generations to a text file for debugging
             #     with open("python_code_completions2.jsonl", "a") as f:
             #         for i,(p, c) in enumerate(zip(repeated_prompts, completions_to_log)):
@@ -410,7 +405,7 @@ class RemoteGRPOTrainer(Trainer):
             #             }
             #             for k in reward_kwargs.keys():
             #                 data[k] = reward_kwargs[k][i]
-                        
+
             #             f.write(json.dumps(data) + "\n")
 
         # calculate the advantages, the prompt is all on the same device to no need to gather here
@@ -497,12 +492,16 @@ class RemoteGRPOTrainer(Trainer):
             return self.batch_buffer.pop(0)
         inputs = self._generate_and_score_completions(inputs)
         gen_dataset = Dataset.from_list(inputs)
-        exact_div(len(gen_dataset), self.args.per_device_train_batch_size, "len(gen_dataset) is not divisible by batch size")
+        exact_div(
+            len(gen_dataset), self.args.per_device_train_batch_size, "len(gen_dataset) is not divisible by batch size"
+        )
 
         def get_logprobs(example, model, output_name):
             # dict of lists to list of dicts
             examples = [dict(zip(example.keys(), values)) for values in zip(*example.values())]
-            input_ids, attention_mask, completion_mask, completion_ids = self._get_padded_inputs_and_attn_mask(examples)
+            input_ids, attention_mask, completion_mask, completion_ids = self._get_padded_inputs_and_attn_mask(
+                examples
+            )
             logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
             with torch.no_grad():
@@ -514,11 +513,21 @@ class RemoteGRPOTrainer(Trainer):
             per_token_logps = [logps[:length] for logps, length in zip(per_token_logps, lengths)]
             example[output_name] = per_token_logps
             return example
-        
+
         set_verbosity_error()
         disable_progress_bars()
-        gen_dataset = gen_dataset.map(get_logprobs, batched=True, batch_size=self.args.per_device_train_batch_size, fn_kwargs={"model": self.ref_model, "output_name": "ref_per_token_logps"})
-        gen_dataset = gen_dataset.map(get_logprobs, batched=True, batch_size=self.args.per_device_train_batch_size, fn_kwargs={"model": self.model, "output_name": "old_per_token_logps"})
+        gen_dataset = gen_dataset.map(
+            get_logprobs,
+            batched=True,
+            batch_size=self.args.per_device_train_batch_size,
+            fn_kwargs={"model": self.ref_model, "output_name": "ref_per_token_logps"},
+        )
+        gen_dataset = gen_dataset.map(
+            get_logprobs,
+            batched=True,
+            batch_size=self.args.per_device_train_batch_size,
+            fn_kwargs={"model": self.model, "output_name": "old_per_token_logps"},
+        )
         enable_progress_bars()
         set_verbosity_info()
 
@@ -538,28 +547,23 @@ class RemoteGRPOTrainer(Trainer):
 
         return self.batch_buffer.pop(0)
 
-
-
     @profiling_decorator
     def _sync_weights(self):
         self.accelerator.wait_for_everyone()
         # if self.accelerator.is_main_process:
         start = time.time()
         # would be better if this was a ram disk + separate thread for writing
-        # TODO, we need multi-process tmp dir here
 
         unwrapped_model = self.accelerator.unwrap_model(self.model)
-        
+
         if is_deepspeed_zero3_enabled():
             state_dict = {}
             for name, param in unwrapped_model.named_parameters():
                 if name in state_dict.keys():
                     # sometimes the embed table is duplicated so no need to regather it
                     continue
-                # the else should not be required here but I had a weird bug.
-                else:
-                    with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
-                        state_dict[name] = param.cpu().detach().clone()
+                with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
+                    state_dict[name] = param.cpu().detach().clone()
         else:
             state_dict = unwrapped_model.state_dict()
 
@@ -583,7 +587,6 @@ class RemoteGRPOTrainer(Trainer):
         # See https://github.com/huggingface/trl/issues/2770
         logits = logits[:, -logits_to_keep:]
         return selective_log_softmax(logits, input_ids)  #  compute logprobs for the input tokens
-
 
     def _get_padded_inputs_and_attn_mask(self, inputs):
         device = self.accelerator.device
@@ -612,7 +615,7 @@ class RemoteGRPOTrainer(Trainer):
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1).to(device)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1).to(device)
         completion_mask = completion_mask.to(device)
-        
+
         return input_ids, attention_mask, completion_mask, completion_ids
 
     @profiling_decorator
@@ -621,31 +624,34 @@ class RemoteGRPOTrainer(Trainer):
         advantages = torch.Tensor([example["advantages"] for example in inputs]).to(device)
         input_ids, attention_mask, completion_mask, completion_ids = self._get_padded_inputs_and_attn_mask(inputs)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-        
-        
+
         ref_per_token_logps = [torch.Tensor(example["ref_per_token_logps"]) for example in inputs]
         old_per_token_logps = [torch.Tensor(example["old_per_token_logps"]) for example in inputs]
 
         # Sanity check: ensure that the number of log probabilities matches the number of tokens in the completion, can be removed later
         for logps, inp in zip(ref_per_token_logps, inputs):
-            assert len(logps) == len(inp["completion_ids"]), f"len(logps)={len(logps)} != len(completion_id)={len(inp['completion_ids'])}"
+            assert len(logps) == len(inp["completion_ids"]), (
+                f"len(logps)={len(logps)} != len(completion_id)={len(inp['completion_ids'])}"
+            )
         pad_token_id = self.processing_class.pad_token_id
-        
+
         # padd the ref and old logps
         pad_ref_per_token_logps = pad(ref_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
         pad_old_per_token_logps = pad(old_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
 
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
-        per_token_kl = torch.exp(pad_ref_per_token_logps - per_token_logps) - (pad_ref_per_token_logps - per_token_logps) - 1
-        
+        per_token_kl = (
+            torch.exp(pad_ref_per_token_logps - per_token_logps) - (pad_ref_per_token_logps - per_token_logps) - 1
+        )
+
         # clipped loss
         coef_1 = torch.exp(per_token_logps - pad_old_per_token_logps)
         coef_2 = torch.clamp(coef_1, 1 - self.args.epsilon, 1 + self.args.epsilon)
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)        
+        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         per_token_loss = per_token_loss + self.args.beta * per_token_kl
-        
+
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
 
         return loss
