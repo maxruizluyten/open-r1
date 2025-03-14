@@ -4,7 +4,7 @@ model_revision: v02.12-step-000003170
 torch_dtype: bfloat16
 attn_implementation: flash_attention_2
 # Data training arguments
-dataset_name: open-r1/verifiable-coding-problems-python-10k_decontaminated
+dataset_name: open-r1/verifiable-coding-problems-python_decontaminated-tested
 dataset_configs:
 - all
 num_processes: 8
@@ -16,7 +16,7 @@ vllm_gpu_memory_utilization: 0.7
 bf16: true
 do_eval: false
 eval_strategy: "no"
-gradient_accumulation_steps: 32
+gradient_accumulation_steps: 16
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
@@ -44,8 +44,8 @@ seed: 42
 warmup_ratio: 0.1
 beta: 0.01
 
-remote_gen_model_url: 26.0.160.225
-num_iterations: 4
+remote_gen_model_url: 26.0.165.131
+num_iterations: 1
 
 
 # Saving and eval callbacks
@@ -57,8 +57,8 @@ num_iterations: 4
 # - lcb
 
 reward_funcs:
-# - code
+- code
 - code_format
 reward_weights:
-# - 1.0
+- 1.0
 - 0.1

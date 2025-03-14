@@ -46,7 +46,7 @@ from trl.extras.profiling import profiling_context, profiling_decorator
 from trl.import_utils import is_rich_available
 from trl.models import create_reference_model, prepare_deepspeed
 from trl.trainer.callbacks import SyncRefModelCallback
-from trl.trainer.utils import pad, print_prompt_completions_sample, selective_log_softmax
+from trl.trainer.utils import pad, print_prompt_completions_sample, selective_log_softmax, exact_div
 
 
 if is_peft_available():
@@ -57,19 +57,11 @@ if is_liger_kernel_available():
 
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
-
 if is_wandb_available():
     import wandb
 
 
-def exact_div(a, b, custom_error_message=""):
-    q = a // b
-    if a != q * b:
-        raise ValueError(f"{custom_error_message}, inexact division: {a} / {b} = {a / b}")
-    return q
-
-
-class RepeatRandomSampler2(Sampler):
+class RepeatBatchRandomSampler(Sampler):
     def __init__(
         self,
         data_source,
@@ -206,11 +198,6 @@ class RemoteGRPOTrainer(Trainer):
                     "This argument can only be used when the `model` argument is a string."
                 )
 
-        if peft_config is not None:
-            if not is_peft_available():
-                raise ImportError("PEFT is required to use `peft_config`. Run `pip install peft`.")
-            model = get_peft_model(model, peft_config)
-
         # Enable gradient checkpointing if requested
         if args.gradient_checkpointing:
             model = self._enable_gradient_checkpointing(model, args)
@@ -231,9 +218,7 @@ class RemoteGRPOTrainer(Trainer):
         elif is_deepspeed_zero3_enabled():
             self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)
         elif is_peft_model(model):
-            # If PEFT is used, the reference model is not needed since the adapter can be disabled
-            # to revert to the initial model.
-            self.ref_model = None
+            raise NotImplementedError("Peft is not supported")
         else:
             # If PEFT configuration is not provided, create a reference model based on the initial model.
             self.ref_model = create_reference_model(model)
@@ -278,12 +263,6 @@ class RemoteGRPOTrainer(Trainer):
         def data_collator(features):  # No data collation is needed in GRPO
             return features
 
-        self.batch_buffer = []
-        # if self.args.gradient_accumulation_steps > self.args.num_generations:
-        #     # If gradient accumulation steps is greater than num generations, we can generate even more samples per batch to speed up training
-        #     self.grad_acc_scalar = exact_div(self.args.gradient_accumulation_steps, self.args.num_generations)
-        # else:
-        #     self.grad_acc_scalar = 1
 
         super().__init__(
             model,
@@ -345,13 +324,7 @@ class RemoteGRPOTrainer(Trainer):
         """
         if self.args.dataloader_num_workers != 0:
             raise ValueError("dataloader_num_workers should not be greater than 0 for remote training")
-        # return RepeatBatchRandomSampler(
-        #     data_source=self.train_dataset,
-        #     batch_size=self._train_batch_size * self.grad_acc_scalar,
-        #     mini_repeat_count=self.args.num_generations * self.args.num_iterations,
-        #     replacement=False,
-        # )
-        return RepeatRandomSampler2(
+        return RepeatBatchRandomSampler(
             data_source=self.train_dataset,
             batch_size=self._train_batch_size,
             repeat_count=self.args.num_generations * self.args.num_iterations,
@@ -428,17 +401,17 @@ class RemoteGRPOTrainer(Trainer):
             output_reward_func = reward_func(prompts=repeated_prompts, completions=completions_to_log, **reward_kwargs)
             rewards[:, i] = torch.tensor(output_reward_func, dtype=torch.float32) * self.reward_weights[i]
             
-            if i == 0 and self.accelerator.is_main_process: # dump generations to a text file for debugging
-                with open("python_code_completions2.jsonl", "a") as f:
-                    for i,(p, c) in enumerate(zip(repeated_prompts, completions_to_log)):
-                        data = {
-                            "prompt": p,
-                            "completion": c,
-                        }
-                        for k in reward_kwargs.keys():
-                            data[k] = reward_kwargs[k][i]
+            # if i == 0 and self.accelerator.is_main_process: # dump generations to a text file for debugging
+            #     with open("python_code_completions2.jsonl", "a") as f:
+            #         for i,(p, c) in enumerate(zip(repeated_prompts, completions_to_log)):
+            #             data = {
+            #                 "prompt": p,
+            #                 "completion": c,
+            #             }
+            #             for k in reward_kwargs.keys():
+            #                 data[k] = reward_kwargs[k][i]
                         
-                        f.write(json.dumps(data) + "\n")
+            #             f.write(json.dumps(data) + "\n")
 
         # calculate the advantages, the prompt is all on the same device to no need to gather here
         grouped_rewards = rewards.sum(-1).view(len(prompts_to_log), self.args.num_generations)
@@ -616,10 +589,6 @@ class RemoteGRPOTrainer(Trainer):
         device = self.accelerator.device
         prompt_ids = [torch.LongTensor(example["prompt_ids"]) for example in inputs]
         completion_ids = [torch.LongTensor(example["completion_ids"]) for example in inputs]
-        # ref_per_token_logps = [torch.Tensor(example["ref_per_token_logps"]) for example in inputs]
-
-        # for logps, completion_id in zip(ref_per_token_logps, completion_ids):
-        #     assert len(logps) == len(completion_id), f"len(logps)={len(logps)} != len(completion_id)={len(completion_id)}"
 
         pad_token_id = self.processing_class.pad_token_id
 
@@ -639,7 +608,6 @@ class RemoteGRPOTrainer(Trainer):
         eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
         sequence_indices = torch.arange(is_eos.size(1)).expand(is_eos.size(0), -1)
         completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
-
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1).to(device)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1).to(device)
