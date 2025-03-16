@@ -518,12 +518,13 @@ class RemoteGRPOTrainer(Trainer):
 
         set_verbosity_error()
         disable_progress_bars()
-        gen_dataset = gen_dataset.map(
-            get_logprobs,
-            batched=True,
-            batch_size=self.args.per_device_train_batch_size,
-            fn_kwargs={"model": self.ref_model, "output_name": "ref_per_token_logps"},
-        )
+        if self.ref_model is not None:
+            gen_dataset = gen_dataset.map(
+                get_logprobs,
+                batched=True,
+                batch_size=self.args.per_device_train_batch_size,
+                fn_kwargs={"model": self.ref_model, "output_name": "ref_per_token_logps"},
+            )
         gen_dataset = gen_dataset.map(
             get_logprobs,
             batched=True,
@@ -627,24 +628,22 @@ class RemoteGRPOTrainer(Trainer):
         input_ids, attention_mask, completion_mask, completion_ids = self._get_padded_inputs_and_attn_mask(inputs)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
-        ref_per_token_logps = [torch.Tensor(example["ref_per_token_logps"]) for example in inputs]
         old_per_token_logps = [torch.Tensor(example["old_per_token_logps"]) for example in inputs]
 
-        # Sanity check: ensure that the number of log probabilities matches the number of tokens in the completion, can be removed later
-        for logps, inp in zip(ref_per_token_logps, inputs):
-            assert len(logps) == len(inp["completion_ids"]), (
-                f"len(logps)={len(logps)} != len(completion_id)={len(inp['completion_ids'])}"
-            )
         pad_token_id = self.processing_class.pad_token_id
 
         # padd the ref and old logps
-        pad_ref_per_token_logps = pad(ref_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
         pad_old_per_token_logps = pad(old_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
 
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
-        per_token_kl = (
-            torch.exp(pad_ref_per_token_logps - per_token_logps) - (pad_ref_per_token_logps - per_token_logps) - 1
-        )
+        del inputs, input_ids, attention_mask  # free up memory
+        
+        if self.ref_model is not None:
+            ref_per_token_logps = [torch.Tensor(example["ref_per_token_logps"]) for example in inputs]
+            pad_ref_per_token_logps = pad(ref_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
+            per_token_kl = (
+                torch.exp(pad_ref_per_token_logps - per_token_logps) - (pad_ref_per_token_logps - per_token_logps) - 1
+            )
 
         # clipped loss
         coef_1 = torch.exp(per_token_logps - pad_old_per_token_logps)
@@ -652,7 +651,9 @@ class RemoteGRPOTrainer(Trainer):
         per_token_loss1 = coef_1 * advantages.unsqueeze(1)
         per_token_loss2 = coef_2 * advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
-        per_token_loss = per_token_loss + self.args.beta * per_token_kl
+        
+        if self.ref_model is not None:
+            per_token_loss = per_token_loss + self.args.beta * per_token_kl
 
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
 
