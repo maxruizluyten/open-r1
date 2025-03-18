@@ -23,7 +23,7 @@ import transformers
 from datasets import Dataset, IterableDataset, disable_progress_bars, enable_progress_bars
 from datasets.utils.logging import set_verbosity_error, set_verbosity_info
 from packaging import version
-from torch.utils.data import DataLoader, RandomSampler, Sampler
+from torch.utils.data import DataLoader, Sampler
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -34,8 +34,7 @@ from transformers import (
     is_wandb_available,
 )
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-from transformers.utils import is_liger_kernel_available, is_peft_available
-
+from transformers.utils import is_liger_kernel_available
 import deepspeed
 import trl
 from accelerate.utils import broadcast_object_list, gather_object, is_peft_model
@@ -165,27 +164,7 @@ class RemoteGRPOTrainer(Trainer):
         model_init_kwargs = args.model_init_kwargs or {}
         if isinstance(model, str):
             model_id = model
-            torch_dtype = model_init_kwargs.get("torch_dtype")
-            if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
-                pass  # torch_dtype is already a torch.dtype or "auto" or None
-            elif isinstance(torch_dtype, str):  # it's a str, but not "auto"
-                torch_dtype = getattr(torch, torch_dtype)
-                model_init_kwargs["torch_dtype"] = torch_dtype
-            else:
-                raise ValueError(
-                    "Invalid `torch_dtype` passed to `GRPOConfig`. Expected either 'auto' or a string representing "
-                    f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
-                )
-            # Disable caching if gradient checkpointing is enabled (not supported)
-            model_init_kwargs["use_cache"] = (
-                False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
-            )
-            if args.use_liger:
-                if not is_liger_kernel_available():
-                    raise ImportError("Please install Liger-kernel for use_liger=True")
-                model = AutoLigerKernelForCausalLM.from_pretrained(model, **model_init_kwargs)
-            else:
-                model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
+            model = self._create_model_from_path(model, args)
         else:
             model_id = model.config._name_or_path
             if args.model_init_kwargs is not None:
@@ -328,7 +307,30 @@ class RemoteGRPOTrainer(Trainer):
             num_processes=self.accelerator.num_processes,
             seed=self.args.seed,
         )
+        
+    def _create_model_from_path(self, model_path: str, args: RemoteGRPOConfig) -> PreTrainedModel:
+        """Creates a model from a path or model identifier."""
+        model_init_kwargs = args.model_init_kwargs or {}
+        # Handle torch dtype
+        torch_dtype = model_init_kwargs.get("torch_dtype")
+        if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
+            pass  # torch_dtype is already a torch.dtype or "auto" or None
+        elif isinstance(torch_dtype, str):  # it's a str, but not "auto"
+            torch_dtype = getattr(torch, torch_dtype)
+            model_init_kwargs["torch_dtype"] = torch_dtype
+        else:
+            raise ValueError(
+                "Invalid `torch_dtype` passed to `SFTConfig`. Expected either 'auto' or a string representing "
+                f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
+            )
+        # Disable caching if gradient checkpointing is enabled (not supported)
+        if args.gradient_checkpointing:
+            model_init_kwargs["use_cache"] = False
 
+        # Create model
+        model = AutoModelForCausalLM.from_pretrained(model_path, **model_init_kwargs)
+        return model
+    
     def _enable_gradient_checkpointing(self, model: PreTrainedModel, args: RemoteGRPOConfig) -> PreTrainedModel:
         """Enables gradient checkpointing for the model."""
         # Ensure use_cache is disabled
@@ -339,7 +341,7 @@ class RemoteGRPOTrainer(Trainer):
             model.base_model.gradient_checkpointing_enable()
         # Enable gradient checkpointing for non-PEFT models
         else:
-            model.gradient_checkpointing_enable()
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=args.gradient_checkpointing_kwargs)
 
         gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs or {}
         use_reentrant = (
@@ -388,15 +390,16 @@ class RemoteGRPOTrainer(Trainer):
             completions_to_log = completions_text
 
         rewards = torch.zeros(len(repeated_prompts), len(self.reward_funcs))
-        for i, reward_func in enumerate(self.reward_funcs):
-            # Repeat all input columns (but "prompt" and "completion") to match the number of generations
-            keys = [key for key in inputs[0] if key not in ["prompt", "completion"]]
-            reward_kwargs = defaultdict(list)
-            for example in inputs:
-                for key in keys:
-                    reward_kwargs[key].extend([example[key]] * self.args.num_generations)
-            output_reward_func = reward_func(prompts=repeated_prompts, completions=completions_to_log, **reward_kwargs)
-            rewards[:, i] = torch.tensor(output_reward_func, dtype=torch.float32) * self.reward_weights[i]
+        with profiling_context(self, "rewards"):
+            for i, reward_func in enumerate(self.reward_funcs):
+                # Repeat all input columns (but "prompt" and "completion") to match the number of generations
+                keys = [key for key in inputs[0] if key not in ["prompt", "completion"]]
+                reward_kwargs = defaultdict(list)
+                for example in inputs:
+                    for key in keys:
+                        reward_kwargs[key].extend([example[key]] * self.args.num_generations)
+                output_reward_func = reward_func(prompts=repeated_prompts, completions=completions_to_log, **reward_kwargs)
+                rewards[:, i] = torch.tensor(output_reward_func, dtype=torch.float32) * self.reward_weights[i]
 
             # if i == 0 and self.accelerator.is_main_process: # dump generations to a text file for debugging
             #     with open("python_code_completions2.jsonl", "a") as f:
@@ -463,14 +466,14 @@ class RemoteGRPOTrainer(Trainer):
             prompts_to_log = gather_object([example["prompt"] for example in examples])
             completions_to_log = gather_object([example["completion"] for example in examples])
             if self.accelerator.is_main_process:
-                if is_rich_available():
-                    # TODO: enable num_samples in TRL to avoid clogging logs
-                    print_prompt_completions_sample(
-                        prompts_to_log[:5],
-                        completions_to_log[:5],
-                        gathered_rewards.sum(1).tolist()[:5],
-                        self.state.global_step,
-                    )
+                # if is_rich_available():
+                #     # TODO: enable num_samples in TRL to avoid clogging logs
+                #     print_prompt_completions_sample(
+                #         prompts_to_log[:5],
+                #         completions_to_log[:5],
+                #         gathered_rewards.sum(1).tolist()[:5],
+                #         self.state.global_step,
+                #     )
                 if self.args.report_to and "wandb" in self.args.report_to and wandb.run is not None:
                     import pandas as pd
 
@@ -506,8 +509,8 @@ class RemoteGRPOTrainer(Trainer):
             )
             logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
-            with torch.no_grad():
-                per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+            
+            per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep).detach()
 
             lengths = [len(example["completion_ids"]) for example in examples]
             # STRIP OFF THE COMPLETION MASK
@@ -516,23 +519,26 @@ class RemoteGRPOTrainer(Trainer):
             example[output_name] = per_token_logps
             return example
 
-        set_verbosity_error()
-        disable_progress_bars()
-        if self.ref_model is not None:
+        with torch.no_grad():
+            set_verbosity_error()
+            disable_progress_bars()
+            if self.ref_model is not None:
+                gen_dataset = gen_dataset.map(
+                    get_logprobs,
+                    batched=True,
+                    batch_size=self.args.per_device_train_batch_size*2,
+                    fn_kwargs={"model": self.ref_model, "output_name": "ref_per_token_logps"},
+                )
+            self.model.eval()
             gen_dataset = gen_dataset.map(
                 get_logprobs,
                 batched=True,
-                batch_size=self.args.per_device_train_batch_size,
-                fn_kwargs={"model": self.ref_model, "output_name": "ref_per_token_logps"},
+                batch_size=self.args.per_device_train_batch_size*2 ,
+                fn_kwargs={"model": self.model, "output_name": "old_per_token_logps"},
             )
-        gen_dataset = gen_dataset.map(
-            get_logprobs,
-            batched=True,
-            batch_size=self.args.per_device_train_batch_size,
-            fn_kwargs={"model": self.model, "output_name": "old_per_token_logps"},
-        )
-        enable_progress_bars()
-        set_verbosity_info()
+            self.model.train()
+            enable_progress_bars()
+            set_verbosity_info()
 
         def mini_batch_collator(mini_batch):
             return mini_batch
@@ -552,6 +558,8 @@ class RemoteGRPOTrainer(Trainer):
 
     @profiling_decorator
     def _sync_weights(self):
+        if self.remote_model.is_mock:
+            return
         self.accelerator.wait_for_everyone()
         # if self.accelerator.is_main_process:
         start = time.time()
@@ -567,13 +575,21 @@ class RemoteGRPOTrainer(Trainer):
                     continue
                 with deepspeed.zero.GatheredParameters(param, modifier_rank=0):
                     state_dict[name] = param.cpu().detach().clone()
-        else:
-            state_dict = unwrapped_model.state_dict()
 
+        # if is_fsdp_managed_module(self.model):
+        #     state_dict = self.model.state_dict()
+        #     trainer.save_model(output_dir)
+        else:
+            state_dict = self.accelerator.get_state_dict(self.model)
+            # if self.accelerator.is_main_process:
+            #     with tempfile.TemporaryDirectory(dir=self.args.checkpoint_dir) as temp_dir_path:   
+            #         self.save_model(temp_dir_path)
+            
+            # state_dict = unwrapped_model.state_dict()
         if self.accelerator.is_main_process:
             with tempfile.TemporaryDirectory(dir=self.args.checkpoint_dir) as temp_dir_path:
                 self._save(temp_dir_path, state_dict=state_dict)
-                self.remote_model.load_weights_from_path(temp_dir_path)
+                self.remote_model.load_weights_from_path(temp_dir_path)  
 
             print(f"Weight sync took: {time.time() - start:.2f}s")
         self.accelerator.wait_for_everyone()
@@ -623,6 +639,7 @@ class RemoteGRPOTrainer(Trainer):
 
     @profiling_decorator
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        
         device = self.accelerator.device
         advantages = torch.Tensor([example["advantages"] for example in inputs]).to(device)
         input_ids, attention_mask, completion_mask, completion_ids = self._get_padded_inputs_and_attn_mask(inputs)
@@ -636,8 +653,6 @@ class RemoteGRPOTrainer(Trainer):
         pad_old_per_token_logps = pad(old_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
 
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
-        del inputs, input_ids, attention_mask  # free up memory
-        
         if self.ref_model is not None:
             ref_per_token_logps = [torch.Tensor(example["ref_per_token_logps"]) for example in inputs]
             pad_ref_per_token_logps = pad(ref_per_token_logps, padding_value=pad_token_id, padding_side="right").to(device)
@@ -645,6 +660,7 @@ class RemoteGRPOTrainer(Trainer):
                 torch.exp(pad_ref_per_token_logps - per_token_logps) - (pad_ref_per_token_logps - per_token_logps) - 1
             )
 
+        del inputs, input_ids, attention_mask  # free up memory
         # clipped loss
         coef_1 = torch.exp(per_token_logps - pad_old_per_token_logps)
         coef_2 = torch.clamp(coef_1, 1 - self.args.epsilon, 1 + self.args.epsilon)
@@ -656,7 +672,7 @@ class RemoteGRPOTrainer(Trainer):
             per_token_loss = per_token_loss + self.args.beta * per_token_kl
 
         loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
-
+        torch.cuda.empty_cache()
         return loss
 
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
