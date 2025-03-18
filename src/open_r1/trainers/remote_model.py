@@ -16,7 +16,7 @@
 
 
 import time
-
+import random
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
@@ -44,8 +44,17 @@ class RemoteModel:
         self.remote_model_url = remote_model_url
         self.remote_model_port = remote_model_port
         self.stop_token_id = stop_token_id
+        
+        if self.remote_model_url == "mock":
+            print("Using mock remote model")
+
+    @property
+    def is_mock(self):
+        return self.remote_model_url == "mock"
 
     def is_healthy(self, timeout=5):
+        if self.remote_model_url == "mock":
+            return True
         """Checks if the remote model server is up and running."""
         try:
             url = f"http://{self.remote_model_url}:{self.remote_model_port}/health"
@@ -68,6 +77,19 @@ class RemoteModel:
         self, input_ids: list[list[int]], max_new_tokens=256, temperature=0.8, num_generations=2
     ) -> tuple[list[list[int]], list[list[int]]]:
         # Prepare the request body
+        if self.remote_model_url == "mock":
+            examples = []
+            for prompt_ids in input_ids:
+                for j in range(num_generations):
+                    example = {
+                        "prompt_ids": prompt_ids,
+                        "completion_ids": random.choices(range(10 ,1000), k=max_new_tokens),
+                        "prompt_log_probs": None, # TODO, not used for now
+                        "completion_log_probs": None,
+                    }
+                    examples.append(example)
+            return examples
+            
         request_body = {
             "input_ids": input_ids,
             "sampling_params": {
@@ -108,6 +130,8 @@ class RemoteModel:
         return examples
 
     def load_weights_from_path(self, path: str):
+        if self.remote_model_url == "mock":
+            return
         url = f"http://{self.remote_model_url}:{self.remote_model_port}/update_weights_from_disk"
         data = {"model_path": path}
 
