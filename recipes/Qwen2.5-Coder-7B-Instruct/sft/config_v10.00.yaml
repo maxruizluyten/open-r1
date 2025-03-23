@@ -1,4 +1,4 @@
-# Config for 4 nodes to go fast
+# Config for 1 node
 # Model arguments
 model_name_or_path: Qwen/Qwen2.5-Coder-7B-Instruct
 model_revision: main
@@ -15,11 +15,10 @@ callbacks:
 - push_to_hub_revision
 benchmarks:
 - lcb_v4
-- lcb
 bf16: true
 do_eval: false
 eval_strategy: 'no'
-gradient_accumulation_steps: 2
+gradient_accumulation_steps: 8
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
@@ -34,6 +33,7 @@ lr_scheduler_type: cosine_with_min_lr
 lr_scheduler_kwargs:
   min_lr_rate: 0.1
 packing: false
+max_grad_norm: 0.2
 max_length: 32768
 max_steps: -1
 num_train_epochs: 10
