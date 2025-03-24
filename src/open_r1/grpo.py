@@ -24,6 +24,7 @@ from datasets import load_dataset
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
+from accelerate import PartialState
 from open_r1.configs import GRPOConfig
 from open_r1.rewards import (
     accuracy_reward,
@@ -189,11 +190,12 @@ def main(script_args, training_args, model_args):
         prompt.append({"role": "user", "content": example["problem"]})
         return {"prompt": prompt}
 
-    dataset = dataset.map(make_conversation)
+    with PartialState().main_process_first():
+        dataset = dataset.map(make_conversation, desc="Formatting conversation")
 
-    for split in dataset:
-        if "messages" in dataset[split].column_names:
-            dataset[split] = dataset[split].remove_columns("messages")
+        for split in dataset:
+            if "messages" in dataset[split].column_names:
+                dataset[split] = dataset[split].remove_columns("messages")
 
     logger.info("*** Initializing model kwargs ***")
     torch_dtype = (

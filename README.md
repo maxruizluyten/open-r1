@@ -169,6 +169,12 @@ ACCELERATE_LOG_LEVEL=info accelerate launch --config_file recipes/accelerate_con
     --config recipes/DeepSeek-R1-Distill-Qwen-1.5B/grpo/config_demo.yaml
 ```
 
+and in another shell session:
+
+```shell
+CUDA_VISIBLE_DEVICES=7 trl vllm-serve --model deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
+```
+
 > [!WARNING]
 > The chat template used in the distilled DeepSeek models omits the contents of the reasoning block within the `<think>` and `</think>` tags. It also prefills the assistant response with `<think>` which interferes with the format reward function. To handle that, it is important to override the chat template as done in e.g.  [recipes/DeepSeek-R1-Distill-Qwen-1.5B/grpo/config_demo.yaml](./recipes/DeepSeek-R1-Distill-Qwen-1.5B/grpo/config_demo.yaml).
 
@@ -176,8 +182,8 @@ ACCELERATE_LOG_LEVEL=info accelerate launch --config_file recipes/accelerate_con
 We provide a minimal reproducible experiment using GRPO for mathematical reasoning, referencing the approach from [SimpleRL-Reason](https://hkust-nlp.notion.site/simplerl-reason) which uses a 7B model trained on 8K examples. Running this on 8 H100 80G GPU takes about 3 hours:
 
 ```shell
-ACCELERATE_LOG_LEVEL=info accelerate launch --config_file recipes/accelerate_configs/zero2.yaml \
-    --num_processes=7 src/open_r1/grpo.py \
+ACCELERATE_LOG_LEVEL=info accelerate launch --config_file recipes/accelerate_configs/zero3.yaml \
+    --num_processes=4 src/open_r1/grpo.py \
     --config recipes/Qwen2.5-Math-7B/grpo/config_simple_rl.yaml
 ```
 
