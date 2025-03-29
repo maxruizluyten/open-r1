@@ -1,3 +1,4 @@
+# Config for 1 + 1 nodes
 # Model arguments
 model_name_or_path: Qwen/Qwen2.5-7B
 model_revision: main
@@ -5,10 +6,9 @@ torch_dtype: bfloat16
 attn_implementation: flash_attention_2
 
 # Data training arguments
-chat_template: "{%- for message in messages %}\n    {%- if message['role'] == 'user' %}\n        {{- '\\n\\nUser: ' + message['content'].strip() }}\n    {%- elif message['role'] == 'system' %}\n        {{- message['content'] }}\n    {%- elif message['role'] == 'assistant' %}\n        {{- '\\n\\nAssistant: '  + message['content'] }}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '\\n\\nAssistant: ' }}\n{%- endif %}"
+chat_template: "{%- if messages[0]['role'] == 'system' %}\n{{- messages[0]['content'] }}\n{%- else %}\n{{- 'A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think>...</think> and <answer>...</answer> tags, respectively, i.e., \\n<think>\\nreasoning process here\\n</think>\\n<answer>\\nanswer here\\n</answer>.' }}\n{%- endif %}\n{%- for message in messages %}\n    {%- if message['role'] == 'user' %}\n        {{- '\\n\\nUser: ' + message['content'].strip() }}\n    {%- elif message['role'] == 'system' %}\n        {{- message['content'] }}\n    {%- elif message['role'] == 'assistant' %}\n        {{- '\\n\\nAssistant: '  + message['content'] }}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '\\n\\nAssistant: ' }}\n{%- endif %}"
 dataset_name: SynthLabsAI/Big-Math-RL-Verified
 dataset_prompt_column: problem
-system_prompt: "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think>...</think> and <answer>...</answer> tags, respectively, i.e., <think> reasoning process here </think> <answer> answer here </answer>."
 
 # GRPO trainer config
 callbacks:
@@ -22,7 +22,7 @@ do_eval: false
 eval_strategy: "no"
 use_vllm: true
 do_eval: false
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 16
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
@@ -40,11 +40,11 @@ max_grad_norm: 0.2
 max_prompt_length: 1024
 max_completion_length: 8192
 max_steps: -1
-num_generations: 8 # Should be 16
+num_generations: 16
 num_train_epochs: 0.1
 output_dir: data/R1-Zero-Qwen-7B
 overwrite_output_dir: true
-per_device_train_batch_size: 8 # Should be 16
+per_device_train_batch_size: 4
 push_to_hub: true
 report_to:
 - wandb
@@ -53,7 +53,7 @@ reward_funcs:
 - format
 reward_weights:
 - 1.0
-- 0.1
+- 0.2
 save_strategy: "steps"
 save_steps: 0.1
 save_total_limit: 1
