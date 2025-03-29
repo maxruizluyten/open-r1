@@ -7,8 +7,8 @@ attn_implementation: flash_attention_2
 
 # Data training arguments
 chat_template: "{%- if messages[0]['role'] == 'system' %}\n{{- messages[0]['content'] }}\n{%- else %}\n{{- 'A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think>...</think> and <answer>...</answer> tags, respectively, i.e., \\n<think>\\nreasoning process here\\n</think>\\n<answer>\\nanswer here\\n</answer>.' }}\n{%- endif %}\n{%- for message in messages %}\n    {%- if message['role'] == 'user' %}\n        {{- '\\n\\nUser: ' + message['content'].strip() }}\n    {%- elif message['role'] == 'system' %}\n        {{- message['content'] }}\n    {%- elif message['role'] == 'assistant' %}\n        {{- '\\n\\nAssistant: '  + message['content'] }}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '\\n\\nAssistant: ' }}\n{%- endif %}"
-dataset_name: SynthLabsAI/Big-Math-RL-Verified
-dataset_prompt_column: problem
+dataset_name: open-r1/Big-Math-RL-Verified
+dataset_config: default
 
 # GRPO trainer config
 callbacks:
