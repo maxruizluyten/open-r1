@@ -11,7 +11,7 @@
 set -exuo pipefail
 
 source ~/.bashrc
-source /fsx/baptiste_colle/open-r1-venv/bin/activate
+source /fsx/$USER/open-r1-agentic-traces/bin/activate
 
 python scripts/generate_agent_traces.py \
     --output-file "data/codeforces_agentic_generations.jsonl" \
