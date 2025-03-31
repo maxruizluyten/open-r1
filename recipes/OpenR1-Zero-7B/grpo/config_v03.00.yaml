@@ -8,7 +8,7 @@ attn_implementation: flash_attention_2
 # Data training arguments
 chat_template: "{%- if messages[0]['role'] == 'system' %}\n{{- messages[0]['content'] }}\n{%- else %}\n{{- 'A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think>...</think> and <answer>...</answer> tags, respectively, i.e., \\n<think>\\nreasoning process here\\n</think>\\n<answer>\\nanswer here\\n</answer>.' }}\n{%- endif %}\n{%- for message in messages %}\n    {%- if message['role'] == 'user' %}\n        {{- '\\n\\nUser: ' + message['content'].strip() }}\n    {%- elif message['role'] == 'system' %}\n        {{- message['content'] }}\n    {%- elif message['role'] == 'assistant' %}\n        {{- '\\n\\nAssistant: '  + message['content'] }}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '\\n\\nAssistant: ' }}\n{%- endif %}"
 dataset_name: open-r1/Big-Math-RL-Verified
-dataset_config: hard
+dataset_config: level_5
 
 # GRPO trainer config
 callbacks:
@@ -27,7 +27,7 @@ gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
 hub_model_id: open-r1/R1-Zero-Qwen-7B
-hub_model_revision: v02.00
+hub_model_revision: v03.00
 hub_strategy: every_save
 learning_rate: 1.0e-06
 log_completions: true
@@ -41,7 +41,7 @@ max_prompt_length: 1024
 max_completion_length: 8192
 max_steps: -1
 num_generations: 16
-num_train_epochs: 0.3
+num_train_epochs: 0.5
 output_dir: data/R1-Zero-Qwen-7B
 overwrite_output_dir: true
 per_device_train_batch_size: 4
