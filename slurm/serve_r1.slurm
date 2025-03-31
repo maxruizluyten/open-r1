@@ -4,7 +4,6 @@
 #SBATCH --qos=normal
 #SBATCH --nodes=2
 #SBATCH --gpus-per-node=8
-#SBATCH --mem-per-cpu=1875m
 #SBATCH --exclusive
 #SBATCH --output=./logs/%x_%j_%n.out
 #SBATCH --error=./logs/%x_%j_%n.err
@@ -15,7 +14,7 @@ set -exuo pipefail
 
 MODEL_PATH="deepseek-ai/DeepSeek-R1"
 CONDA_ENV="sglang124"
-ROUTER_ADDRESS="10.53.86.164:39876"
+ROUTER_ADDRESS=""
 SERVER_PORT=39877
 DIST_PORT=45000
 
@@ -37,7 +36,7 @@ done
 # TODO: Environment setup, adjust to your cluster configuration
 module load cuda/12.4
 source ~/.bashrc
-source "$HOME/miniconda3/etc/profile.d/conda.sh"
+source "$CONDA_PREFIX/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV" || { echo "Failed to activate conda env $CONDA_ENV"; exit 1; }
 
 FIRST_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)

@@ -27,13 +27,8 @@ done
 
 # TODO: Environment setup, adjust to your cluster configuration
 source ~/.bashrc
-source "$HOME/miniconda3/etc/profile.d/conda.sh"
+source "$CONDA_PREFIX/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV" || { echo "Failed to activate conda env $CONDA_ENV"; exit 1; }
-
-# FIRST_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
-# FIRST_NODE_IP=$(srun --nodes=1 --ntasks=1 -w "$FIRST_NODE" hostname --ip-address)
-
-# echo "Router IP: $FIRST_NODE_IP"
 
 python -m sglang_router.launch_router \
     --port "$ROUTER_PORT" \
