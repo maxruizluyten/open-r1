@@ -92,6 +92,8 @@ extras["quality"] = deps_list("ruff", "isort", "flake8")
 extras["code"] = deps_list("e2b-code-interpreter", "python-dotenv")
 extras["eval"] = deps_list("lighteval", "math-verify")
 extras["dev"] = extras["quality"] + extras["tests"] + extras["eval"] + extras["code"]
+extras["smolagents"] = deps_list("smolagents==1.12.0")
+extras["jupyter"] = deps_list("ipykernel", "ipywidgets")
 
 # core dependencies shared across the whole project - keep this to a bare minimum :)
 install_requires = [

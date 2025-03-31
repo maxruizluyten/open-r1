@@ -3,21 +3,29 @@
 ## Step 1: Install (setup the environment)
 
 ```bash
-uv venv /fsx/$USER/open-r1-agentic-traces --python 3.10 
-uv pip install -r agentic-traces/requirements.txt
+make install
+```
+
+```bash
+source openr1/bin/activate
+uv pip install -e ".[smolagents,jupyter]"
 ```
 
 ## Step 2: Start the R1 server
 
+for the `serve_r1.slurm` file do not forget to add the router address
+
 ```bash
 sbatch slurm/serve_router.slurm
-sbatch slurm/serve_r1.slurm (do not forget to add the router address)
+sbatch slurm/serve_r1.slurm
 ```
 
 ## Step 3: Generate traces
 
+This takes ~3 days to complete.
+
 ```bash
-sbatch slurm/agentic_generation.slurm (this takes ~3 days)
+sbatch slurm/agentic_generation.slurm 
 ```
 
 ## Step 4: Process the traces and upload dataset to the hub
@@ -39,18 +47,16 @@ The dataset can be found at https://huggingface.co/datasets/baptistecolle/codefo
 ## Step 5: Train on the traces and upload the model to the hub
 
 ```bash
-ACCELERATE_LOG_LEVEL=info accelerate launch --config_file recipes/accelerate_configs/zero3.yaml \
-    src/open_r1/sft.py \
-    --config recipes/Qwen2.5-1.5B-Instruct/sft/config_demo_agentic_trace.yaml
+sbatch --nodes=1 --time=8:00:00 slurm/train.slurm Qwen2.5-1.5B-Instruct sft demo_agentic_trace zero3 '--per_device_train_batch_size=1 --num_train_epochs=5'
 ```
 
-The model can be found at https://huggingface.co/baptistecolle/open-r1-agentic-trace-Qwen2.5-1.5B-Instruct
+The trainedmodel can be found at https://huggingface.co/baptistecolle/Qwen2.5-1.5B-Open-R1-Distill-Agentic-Trace
 
 ## Step 6: Test the model
 first need to fix the generate_agent_traces.py file before testing the model I believe (see: `generate_agent_traces.py` file is not working)
-In order to do step 6, create some custom metrics in lighteval for the agentic traces.
+**TODO:** create some custom metrics in lighteval for the agentic traces.
 
-# TODO:
+# TODOs:
 - **The `generate_agent_traces.py` file is not working**: most of the generation of the traces fails, and furthermore based on the eda (exploratory data analysis) none of the generated traces acutally pass the test cases, indeed almost all traces end with `Error:\\nReached max steps.` so none of the generated traces actually solve the test cases
 
 # Current status
