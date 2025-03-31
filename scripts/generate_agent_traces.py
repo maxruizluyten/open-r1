@@ -21,9 +21,6 @@ from transformers import AutoTokenizer
 from smolagents import CodeAgent, Tool
 from smolagents.models import get_clean_message_list
 
-from dotenv import load_dotenv
-
-load_dotenv()
 file_lock = Lock()
 
 tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1")
@@ -225,18 +222,21 @@ def main():
     parser.add_argument("--prompt-column", type=str, required=True)
     parser.add_argument("--uuid-column", type=str, required=True)
     parser.add_argument("--api-addr", type=str, default="localhost:39876")
-    parser.add_argument("--num-generations", type=int, default=4)
+    parser.add_argument("--num-generations", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--max-tokens", type=int, default=8096)
     parser.add_argument("--max-concurrent", type=int, default=1000)
     args = parser.parse_args()
-
+    
+    subset = ""
+    # subset = "[:10]"
+    seed = 42
+    
     dataset = load_dataset(
         "open-r1/codeforces-test-cases",
-        split="train",
-        token=os.getenv("HF_TOKEN")
-    ).shuffle()
+        split=f"train{subset}",
+    ).shuffle(seed=seed)
     dataset = dataset.filter(lambda x: x["full_test_set"])
     
     processed_uuids = load_processed_uuids(args.output_file, args.uuid_column)
@@ -251,6 +251,10 @@ def main():
     if not output_path.exists():
         with open(args.output_file, mode="w") as f:
             f.write("")
+            
+    # print(f"Processing using {args.max_concurrent} workers")
+    # print(f"Using ip {args.api_addr}")
+    
 
     # Create a session that will be shared among threads
     session = requests.Session()

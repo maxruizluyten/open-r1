@@ -1,0 +1,10 @@
+argparse
+datasets
+tqdm
+requests
+python-dotenv
+transformers==4.49.0
+smolagents
+hf_transfer
+ipykernel
+ipywidgets
