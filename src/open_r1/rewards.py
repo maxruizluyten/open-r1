@@ -38,7 +38,7 @@ else:
     AsyncSandbox = None
 
 
-def accuracy_reward(completions, solution, **kwargs):
+def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[float]:
     """Reward function that checks if the completion is the same as the ground truth."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
@@ -70,12 +70,12 @@ def accuracy_reward(completions, solution, **kwargs):
             )
             # Reward 1 if the content is the same as the ground truth, 0 otherwise
             try:
-                reward = float(verify(answer_parsed, gold_parsed))
+                reward = float(verify(gold_parsed, answer_parsed))
             except Exception as e:
                 print(f"verify failed: {e}, answer: {answer_parsed}, gold: {gold_parsed}")
                 reward = 0.0
         else:
-            # If the gold solution is not parseable, we reward `None` to skip this example
+            # If the gold solution is not parseable, we return `None` to skip this example
             reward = None
             print("Failed to parse gold solution: ", sol)
         rewards.append(reward)
