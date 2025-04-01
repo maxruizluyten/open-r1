@@ -20,7 +20,7 @@ import json
 import math
 import re
 from functools import partial, update_wrapper
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 
 from latex2sympy2_extended import NormalizationConfig
 from math_verify import LatexExtractionConfig, parse, verify
@@ -38,7 +38,7 @@ else:
     AsyncSandbox = None
 
 
-def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[float]:
+def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[Optional[float]]:
     """Reward function that checks if the completion is the same as the ground truth."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
@@ -68,12 +68,12 @@ def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str]
                 ],
                 extraction_mode="first_match",
             )
-            # Reward 1 if the content is the same as the ground truth, 0 otherwise
+            # Reward 1 if the content is the same as the ground truth, `None` otherwise
             try:
                 reward = float(verify(gold_parsed, answer_parsed))
             except Exception as e:
                 print(f"verify failed: {e}, answer: {answer_parsed}, gold: {gold_parsed}")
-                reward = 0.0
+                reward = None
         else:
             # If the gold solution is not parseable, we return `None` to skip this example
             reward = None
