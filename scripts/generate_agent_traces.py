@@ -18,12 +18,18 @@ import requests.adapters
 
 from transformers import AutoTokenizer
 
-from smolagents import CodeAgent, Tool
+from smolagents import CodeAgent, Tool, HfApiModel
 from smolagents.models import get_clean_message_list
 
 from dotenv import load_dotenv
 
 load_dotenv()
+assert os.getenv("HF_TOKEN") is not None
+
+# from huggingface_hub import login
+
+# print("LOGIN:\n", login(token=os.getenv("HF_TOKEN")))
+
 file_lock = Lock()
 
 tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1")
@@ -36,12 +42,13 @@ class ModifiedFinalAnswerTool(Tool):
     output_type = "string"
 
     def forward(self, answer_function: Any) -> str:
-        source_code = inspect.getsource(answer_function)
-        print("USING MODIFIED FINAL ANSWER TOOL, got source code:\n", source_code)
+        source_code = answer_function.__source__
         return source_code
 
     def __init__(self, *args, **kwargs):
         self.is_initialized = False
+
+
 
 class ChatMessage:
     def __init__(self, content):
@@ -99,10 +106,12 @@ def generate_completion_from_messages(session, messages, args, stop_sequences) -
     raise Exception("Failed to get a valid response after multiple retries")
 
 def get_agent_run(session, task, args):
-    def model(messages, stop_sequences = None):
-        cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"}, flatten_messages_as_text=True)
-        result = generate_completion_from_messages(session, cleaned_messages, args, stop_sequences)
-        return ChatMessage(content=result)
+    # def model(messages, stop_sequences = None):
+    #     cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"}, flatten_messages_as_text=True)
+    #     result = generate_completion_from_messages(session, cleaned_messages, args, stop_sequences)
+    #     return ChatMessage(content=result)
+
+    model = HfApiModel("Qwen/Qwen2.5-Coder-32B-Instruct", provider="fireworks-ai", token=os.getenv("HF_TOKEN"))
 
     agent = CodeAgent(
         model=model,
@@ -114,7 +123,7 @@ def get_agent_run(session, task, args):
 
     try:
         output = agent.run(task)
-        return agent.write_memory_to_messages(), output
+        return output, agent.write_memory_to_messages()
     except Exception as e:
         print(f"Error when generating agentic trace: {e}")
         return None
@@ -129,7 +138,7 @@ def process_example(example, session, args, output_file, pbar=None):
     - if the task says 'the first line is a number, the second line is a list of numbers', your function should take two arguments like this: def your_function(n, numbers).
     - if the task says 'the first line will contain a number n, the n lines after that will be strings', your function should take flexible arguments like this: def your_function(n, *n_lines).
     Make sure to properly extract the inputs from the string arguments.
-    ALWAYS RUN THE FUNCTION IN A CODE SNIPPET WITH TEST CASES BEFORE RETURNING IT.
+    ALWAYS RUN THE FUNCTION IN A CODE SNIPPET WITH TEST CASES BEFORE RETURNING IT. DDO NOT GIVE YOUR FINAL ANSWER IN THE FIRST STEP.
     """
     try:
         agent_outputs, agent_memories = [], []
