@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=agentic-r1
+#SBATCH --job-name=agent-train
 #SBATCH --gres=gpu:8
 #SBATCH --partition=hopper-prod
 #SBATCH --qos=high
