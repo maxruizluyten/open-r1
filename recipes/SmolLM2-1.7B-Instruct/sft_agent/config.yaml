@@ -44,3 +44,14 @@ save_strategy: "steps"
 save_steps: 500
 save_total_limit: 1
 seed: 42
+
+# Distributed
+distributed_type: DEEPSPEED
+downcast_bf16: 'no'
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 8
+rdzv_backend: static
+same_network: true
