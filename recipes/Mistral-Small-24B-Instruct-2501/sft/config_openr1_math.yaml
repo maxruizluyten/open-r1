@@ -9,8 +9,6 @@ attn_implementation: flash_attention_2
 # Data training arguments
 # dataset_name: yentinglin/s1K-1.1-trl-format
 dataset_name: yentinglin/OpenR1-Math-220k-trl-format
-dataset_configs:
-- all
 preprocessing_num_workers: 8
 
 # SFT trainer config
@@ -29,7 +27,7 @@ logging_steps: 1
 logging_strategy: steps
 lr_scheduler_type: cosine
 packing: true
-max_seq_length: 32768
+max_length: 32768
 max_steps: -1
 num_train_epochs: 5
 output_dir: data/Mistral-Small-24B-Instruct-2501-Open-R1-Distill
