@@ -19,11 +19,12 @@ import requests.adapters
 from transformers import AutoTokenizer
 
 from smolagents import CodeAgent, Tool, HfApiModel
-from smolagents.models import get_clean_message_list
+from open_r1.rewards import run_tests
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
+
 assert os.getenv("HF_TOKEN") is not None
 
 # from huggingface_hub import login
@@ -35,19 +36,28 @@ file_lock = Lock()
 tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1")
 
 print("Launching generation")
+
+def test_cases_on_function(function: Any, test_cases: List[dict]) -> str:
+    source_code = f"```python\n{function.__source__}\n{function.__name__}()```"
+    test_completions = [[{"content": source_code}]]
+    test_kwargs = {"verification_info": [{"language": "python", "test_cases": test_cases}]}
+    run_tests(test_completions, e2b_router_url="0.0.0.0:8000", test_mode=True, **test_kwargs)
+
+
 class ModifiedFinalAnswerTool(Tool):
     name = "final_answer"
-    description = "Provides a final answer to the given problem."
+    description = "Tests a function: if correct, returns it as the final answer; Else returns the test case that errored for solving."
     inputs = {'answer_function': {'type': 'any', 'description': 'The final function that solves the problem'}}
     output_type = "string"
 
-    def forward(self, answer_function: Any) -> str:
-        source_code = answer_function.__source__
-        return source_code
-
-    def __init__(self, *args, **kwargs):
+    def __init__(self, test_cases):
         self.is_initialized = False
+        self.test_cases = test_cases
+        super().__init__()
 
+    def forward(self, answer_function: Any) -> str:
+        test_cases_on_function(answer_function, self.test_cases)
+        return answer_function.__source__
 
 
 class ChatMessage:
@@ -84,7 +94,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences) -
                 retry_budget -= 1
                 time.sleep(20)
                 continue
-            
+
             # Parse JSON response
             try:
                 output = response.json()["choices"][0]["message"]["content"]
@@ -96,7 +106,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences) -
                 retry_budget -= 1
                 time.sleep(20)
                 continue
-                
+
         except requests.exceptions.RequestException as e:
             print(f"API request error (will retry): {e}")
             traceback.print_exc()
@@ -105,7 +115,7 @@ def generate_completion_from_messages(session, messages, args, stop_sequences) -
 
     raise Exception("Failed to get a valid response after multiple retries")
 
-def get_agent_run(session, task, args):
+def get_agent_run(session, task, test_cases, args):
     # def model(messages, stop_sequences = None):
     #     cleaned_messages = get_clean_message_list(messages, {"system": "user", "tool-call": "assistant", "tool-response": "user"}, flatten_messages_as_text=True)
     #     result = generate_completion_from_messages(session, cleaned_messages, args, stop_sequences)
@@ -115,14 +125,14 @@ def get_agent_run(session, task, args):
 
     agent = CodeAgent(
         model=model,
-        tools=[ModifiedFinalAnswerTool()],
-        additional_authorized_imports=["sympy", "numpy", "math"],
+        tools=[ModifiedFinalAnswerTool(test_cases)],
+        additional_authorized_imports=["numpy", "math"],
         max_steps=10,
         verbosity_level=2
     )
 
     try:
-        output = agent.run(task)
+        output = agent.run(task, additional_args={"test_cases": test_cases})
         return output, agent.write_memory_to_messages()
     except Exception as e:
         print(f"Error when generating agentic trace: {e}")
@@ -132,18 +142,17 @@ def process_example(example, session, args, output_file, pbar=None):
     prompt = f"""Here is a task to solve using a function:
     {example[args.prompt_column]}
 
-    Now write a function that solves the problem, test it and return it using final_answer(your_function).
-    The function should take the inputs described in the task above, using them in this way: the function will be passed the 'lines' described in the task as different arguments.
-    For instance:
-    - if the task says 'the first line is a number, the second line is a list of numbers', your function should take two arguments like this: def your_function(n, numbers).
-    - if the task says 'the first line will contain a number n, the n lines after that will be strings', your function should take flexible arguments like this: def your_function(n, *n_lines).
-    Make sure to properly extract the inputs from the string arguments.
-    ALWAYS RUN THE FUNCTION IN A CODE SNIPPET WITH TEST CASES BEFORE RETURNING IT. DO NOT GIVE YOUR FINAL ANSWER IN THE FIRST STEP.
+    Now write a function that solves the problem, then you can at once test and return it by using the tool final_answer(your_function).
+    - The function should take the inputs described in the task above: use the input() function to get them.
+    - As such your function will not take any arguments. IT SHOULD BE ONE SINGLE MONOLITHIC FUNCTION, no helper functions, all imports and variable defs should be inside the function.
+    - And your function should give its output to stdout via print(). Returning anything is useless.
+    - ALSO, DO NOT TRY TO CRAFT CUSTOM TEST FUNCTIONS or do not run your function: just test it using final_answer.
+    - If you get this error: 'Forbidden function evaluation: 'input' is not among the explicitly allowed tools', it just means that you've tried to run your function: don't do that, just return it using final_answer
     """
     try:
         agent_outputs, agent_memories = [], []
         for _ in range(args.num_generations):
-            agent_output, agent_memory = get_agent_run(session, prompt, args)
+            agent_output, agent_memory = get_agent_run(session, prompt, example["test_cases"], args)
             agent_outputs.append(agent_output)
             agent_memories.append(agent_memory)
 
@@ -228,6 +237,20 @@ def process_example_wrapper(args_tuple):
     return process_example(example, session, args, output_file, pbar)
 
 def main():
+    test_function = ModifiedFinalAnswerTool([{"input": "1 2 3", "output": 5}])
+
+    def add_numbers():
+        numbers = input()
+        print(sum([int(number) for number in numbers.split()]))
+
+    from textwrap import dedent
+
+    add_numbers.__source__ = dedent(inspect.getsource(add_numbers))
+    # print(test_function(
+    #     add_numbers,
+    # ))
+    # quit()
+
     parser = argparse.ArgumentParser()
     # parser.add_argument("--dataset-name", type=str, required=True)
     parser.add_argument("--output-file", type=str, required=True)
