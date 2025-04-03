@@ -6,7 +6,7 @@ torch_dtype: bfloat16
 attn_implementation: sdpa
 
 # Data training arguments
-dataset_name: open-r1/OpenR1-Math-220k
+dataset_name: smolagents/gaia-traces
 dataset_num_proc: 48
 
 #SFT hyperparam
@@ -29,13 +29,13 @@ eval_strategy: 'no'
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
-hub_model_id: OpenR1-Qwen-7B-SFT
+hub_model_id: OpenR1-SmolLM2-1.7B-Instruct-Agentic
 hub_strategy: every_save
 log_level: info
 logging_steps: 5
 logging_strategy: steps
 packing: true
-output_dir: data/OpenR1-Qwen-7B-SFT
+output_dir: data/OpenR1-SmolLM2-1.7B-Instruct-Agentic
 overwrite_output_dir: true
 push_to_hub: true
 report_to:

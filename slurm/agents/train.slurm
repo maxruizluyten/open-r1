@@ -27,4 +27,4 @@ accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml src/open_r
     --logging_steps 5 \
     --eval_strategy steps \
     --eval_steps 100 \
-    --output_dir data/Qwen2.5-1.5B-Open-R1-Distill
+    --output_dir data/SmolVLM2-2.2B-Instruct-Agentic-Training
