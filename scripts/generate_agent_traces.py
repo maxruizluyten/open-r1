@@ -138,7 +138,7 @@ def process_example(example, session, args, output_file, pbar=None):
     - if the task says 'the first line is a number, the second line is a list of numbers', your function should take two arguments like this: def your_function(n, numbers).
     - if the task says 'the first line will contain a number n, the n lines after that will be strings', your function should take flexible arguments like this: def your_function(n, *n_lines).
     Make sure to properly extract the inputs from the string arguments.
-    ALWAYS RUN THE FUNCTION IN A CODE SNIPPET WITH TEST CASES BEFORE RETURNING IT. DDO NOT GIVE YOUR FINAL ANSWER IN THE FIRST STEP.
+    ALWAYS RUN THE FUNCTION IN A CODE SNIPPET WITH TEST CASES BEFORE RETURNING IT. DO NOT GIVE YOUR FINAL ANSWER IN THE FIRST STEP.
     """
     try:
         agent_outputs, agent_memories = [], []
@@ -181,8 +181,8 @@ def process_example(example, session, args, output_file, pbar=None):
             **example,  # Preserve all original dataset fields
             "generations": serializable_generations,
             "final_outputs": agent_outputs,
-            "finish_reasons": finish_reasons,
-            "api_metadata": api_metadata,
+            # "finish_reasons": finish_reasons,
+            # "api_metadata": api_metadata,
         }
 
         # Write to file with lock
