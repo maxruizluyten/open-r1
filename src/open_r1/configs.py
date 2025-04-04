@@ -40,7 +40,7 @@ class GRPOConfig(trl.GRPOConfig):
     hub_model_revision: Optional[str] = field(
         default="main", metadata={"help": "The Hub model branch to push the model to."}
     )
-    num_completions_to_print: int = field(default=1, metadata={"help": "Number of completions to print."})
+    num_completions_to_print: int = field(default=0, metadata={"help": "Number of completions to print."})
     overwrite_hub_revision: bool = field(default=False, metadata={"help": "Whether to overwrite the Hub revision."})
     push_to_hub_revision: bool = field(default=False, metadata={"help": "Whether to push to a Hub revision/branch."})
     wandb_entity: Optional[str] = field(
