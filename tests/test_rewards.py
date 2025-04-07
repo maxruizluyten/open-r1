@@ -25,6 +25,7 @@ from open_r1.rewards import (
     get_reward_funcs,
     len_reward,
     reasoning_steps_reward,
+    soft_format_reward,
     tag_count_reward,
 )
 
@@ -70,28 +71,7 @@ class TestGetRewardFuncs(unittest.TestCase):
             self.assertEqual(func_name, func.__name__)
 
 
-class TestRewards(unittest.TestCase):
-    def test_accuracy_reward_correct_answer(self):
-        """Test accuracy_reward with a correct answer."""
-        completion = [[{"content": r"\boxed{\frac{63}{400}}"}]]
-        solution = [r"\frac{63}{400}"]
-        rewards = accuracy_reward(completion, solution)
-        self.assertEqual(rewards[0], 1.0)
-
-    def test_accuracy_reward_wrong_answer(self):
-        """Test accuracy_reward with an incorrect answer."""
-        completion = [[{"content": r"\boxed{\frac{64}{400}}"}]]
-        solution = [r"\frac{63}{400}"]
-        rewards = accuracy_reward(completion, solution)
-        self.assertEqual(rewards[0], 0.0)
-
-    def test_accuracy_reward_wrong_answer_no_latex(self):
-        """Test accuracy_reward with an incorrect answer and gold solution with no latex."""
-        completion = [[{"content": r"\boxed{3}"}]]
-        solution = ["6"]
-        rewards = accuracy_reward(completion, solution)
-        self.assertEqual(rewards[0], 0.0)
-
+class TestFormatRewards(unittest.TestCase):
     def test_format_reward_correct(self):
         """Test format_reward with correct format."""
         completion = [[{"content": "<think>\nSome reasoning\n</think>\n<answer>\nThe answer\n</answer>"}]]
@@ -113,6 +93,38 @@ class TestRewards(unittest.TestCase):
             rewards = format_reward(completion)
             self.assertEqual(rewards[0], 0.0)
 
+
+class TestSoftFormatReward(unittest.TestCase):
+    def correct_with_newlines(self):
+        """Test soft_format_reward with correct format and newlines."""
+        completion = [[{"content": "<think>\nSome reasoning\n</think>\n<answer>\nThe answer\n</answer>"}]]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 1.0)
+
+    def correct_without_newlines(self):
+        """Test soft_format_reward with correct format without newlines."""
+        completion = [[{"content": "<think>Some reasoning</think><answer>The answer</answer>"}]]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 1.0)
+
+    def correct_with_extra_spaces(self):
+        """Test soft_format_reward with correct format and extra spaces."""
+        completion = [[{"content": "<think> Some reasoning </think> <answer> The answer </answer>"}]]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 1.0)
+
+    def correct_with_prefix(self):
+        """Test soft_format_reward with correct format and prefix."""
+        completion = [[{"content": "Blah blah foo. <think>Some reasoning</think><answer>The answer</answer>"}]]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 1.0)
+
+    def inverted_tag_order(self):
+        """Test soft_format_reward with inverted tag order."""
+        completion = [[{"content": "<answer>The answer</answer><think>Some reasoning</think>"}]]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 0.0)
+
     def test_reasoning_steps_reward(self):
         """Test reasoning_steps_reward with various formats."""
         test_cases = [
@@ -130,6 +142,29 @@ class TestRewards(unittest.TestCase):
             completion = [[{"content": content}]]
             rewards = reasoning_steps_reward(completion)
             self.assertAlmostEqual(rewards[0], expected_reward)
+
+
+class TestRewards(unittest.TestCase):
+    def test_accuracy_reward_correct_answer(self):
+        """Test accuracy_reward with a correct answer."""
+        completion = [[{"content": r"\boxed{\frac{63}{400}}"}]]
+        solution = [r"\frac{63}{400}"]
+        rewards = accuracy_reward(completion, solution)
+        self.assertEqual(rewards[0], 1.0)
+
+    def test_accuracy_reward_wrong_answer(self):
+        """Test accuracy_reward with an incorrect answer."""
+        completion = [[{"content": r"\boxed{\frac{64}{400}}"}]]
+        solution = [r"\frac{63}{400}"]
+        rewards = accuracy_reward(completion, solution)
+        self.assertEqual(rewards[0], 0.0)
+
+    def test_accuracy_reward_wrong_answer_no_latex(self):
+        """Test accuracy_reward with an incorrect answer and gold solution with no latex."""
+        completion = [[{"content": r"\boxed{3}"}]]
+        solution = ["6"]
+        rewards = accuracy_reward(completion, solution)
+        self.assertEqual(rewards[0], 0.0)
 
     def test_multiple_completions(self):
         """Test handling multiple completions at once."""
