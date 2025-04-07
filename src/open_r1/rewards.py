@@ -92,11 +92,31 @@ def format_reward(completions, **kwargs) -> list[float]:
 
 
 def soft_format_reward(completions, **kwargs) -> list[float]:
-    """Reward function that checks if <think>, </think>, <answer> and </answer> tags appear anywhere in the completion."""
-    pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
+    """
+    Reward is 1.0 only if there is exactly one <think>...</think> block
+    followed by exactly one <answer>...</answer> block, and no other occurrences.
+    """
+    think_pattern = r"<think>.*?</think>"
+    answer_pattern = r"<answer>.*?</answer>"
+
     completion_contents = [completion[0]["content"] for completion in completions]
-    matches = [re.match(pattern, content, re.DOTALL | re.MULTILINE) for content in completion_contents]
-    return [1.0 if match else 0.0 for match in matches]
+    rewards = []
+
+    for content in completion_contents:
+        think_matches = re.findall(think_pattern, content, re.DOTALL)
+        answer_matches = re.findall(answer_pattern, content, re.DOTALL)
+
+        # Enforce exactly one of each
+        if len(think_matches) == 1 and len(answer_matches) == 1:
+            # Check that <think> comes before <answer>
+            think_index = content.find(think_matches[0])
+            answer_index = content.find(answer_matches[0])
+            if think_index < answer_index:
+                rewards.append(1.0)
+                continue
+        rewards.append(0.0)
+
+    return rewards
 
 
 def tag_count_reward(completions, **kwargs) -> list[float]:

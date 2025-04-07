@@ -95,36 +95,58 @@ class TestFormatRewards(unittest.TestCase):
 
 
 class TestSoftFormatReward(unittest.TestCase):
-    def correct_with_newlines(self):
-        """Test soft_format_reward with correct format and newlines."""
+    def test_correct_with_newlines(self):
+        completion = [
+            [{"content": "Here is my reasoning: <think>\nSome reasoning\n</think>\n<answer>\nThe answer\n</answer>"}]
+        ]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 1.0)
+
+    def test_correct_without_newlines(self):
+        completion = [[{"content": "Here is my reasoning: <think>Some reasoning</think><answer>The answer</answer>"}]]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 1.0)
+
+    def test_correct_with_extra_spaces(self):
+        completion = [
+            [{"content": "Here is my reasoning: <think> Some reasoning </think> <answer> The answer </answer>"}]
+        ]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 1.0)
+
+    def test_correct_with_strict_format(self):
         completion = [[{"content": "<think>\nSome reasoning\n</think>\n<answer>\nThe answer\n</answer>"}]]
         rewards = soft_format_reward(completion)
         self.assertEqual(rewards[0], 1.0)
 
-    def correct_without_newlines(self):
-        """Test soft_format_reward with correct format without newlines."""
-        completion = [[{"content": "<think>Some reasoning</think><answer>The answer</answer>"}]]
+    def test_incorrect_with_multiple_reasoning_block(self):
+        completion = [
+            [
+                {
+                    "content": "Here is my reasoning: <think> Some reasoning </think> <answer> The answer </answer> New rambling <think> Some reasoning </think> <answer> The answer </answer>"
+                }
+            ]
+        ]
         rewards = soft_format_reward(completion)
-        self.assertEqual(rewards[0], 1.0)
+        self.assertEqual(rewards[0], 0.0)
 
-    def correct_with_extra_spaces(self):
-        """Test soft_format_reward with correct format and extra spaces."""
-        completion = [[{"content": "<think> Some reasoning </think> <answer> The answer </answer>"}]]
-        rewards = soft_format_reward(completion)
-        self.assertEqual(rewards[0], 1.0)
-
-    def correct_with_prefix(self):
-        """Test soft_format_reward with correct format and prefix."""
-        completion = [[{"content": "Blah blah foo. <think>Some reasoning</think><answer>The answer</answer>"}]]
-        rewards = soft_format_reward(completion)
-        self.assertEqual(rewards[0], 1.0)
-
-    def inverted_tag_order(self):
-        """Test soft_format_reward with inverted tag order."""
+    def test_incorrect_with_answer_before_think(self):
         completion = [[{"content": "<answer>The answer</answer><think>Some reasoning</think>"}]]
         rewards = soft_format_reward(completion)
         self.assertEqual(rewards[0], 0.0)
 
+    def test_incorrect_missing_think_block(self):
+        completion = [[{"content": "Here is my reasoning: <answer>The answer</answer>"}]]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 0.0)
+
+    def test_incorrect_missing_answer_block(self):
+        completion = [[{"content": "Here is my reasoning: <think>Some reasoning</think>"}]]
+        rewards = soft_format_reward(completion)
+        self.assertEqual(rewards[0], 0.0)
+
+
+class TestReasoningStepsReward(unittest.TestCase):
     def test_reasoning_steps_reward(self):
         """Test reasoning_steps_reward with various formats."""
         test_cases = [
