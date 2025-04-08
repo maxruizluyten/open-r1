@@ -66,8 +66,8 @@ _deps = [
     "safetensors>=0.3.3",
     "sentencepiece>=0.1.99",
     "torch==2.5.1",
-    "transformers==4.50.0",
-    "trl @ git+https://github.com/huggingface/trl.git@e70a0efecae2e0dedd561c6fb7f32038966da2c9",
+    "transformers==4.50.3",
+    "trl @ git+https://github.com/huggingface/trl.git@1d7b8c4f706a0df9fd4d3e8d0d576e8dd5dedb28", # overlong filtering (DAPO)
     "vllm==0.7.2",
     "wandb>=0.19.1",
 ]
