@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=open-r1-sft
+#SBATCH --job-name=agent-sft
 #SBATCH --ntasks-per-node=1
 #SBATCH --exclusive
 #SBATCH --gres=gpu:8
