@@ -415,7 +415,15 @@ def extract_code(completion: str, language: str = "python") -> str:
 def binary_code_reward(completions, num_parallel: int = 2, e2b_router_url=None, **kwargs) -> list[float]:
     rewards = code_reward(completions, num_parallel=num_parallel, e2b_router_url=e2b_router_url, **kwargs)
     BINARY_THRESHOLD = 0.99
-    return [1.0 if reward > BINARY_THRESHOLD else 0.0 for reward in rewards]
+
+    output = []
+    for reward in rewards:
+        if reward is None:
+            output.append(None)
+        else:
+            output.append(1.0 if reward > BINARY_THRESHOLD else 0.0)
+
+    return output
 
 
 def code_reward(completions, num_parallel: int = 2, e2b_router_url=None, **kwargs) -> list[float]:
@@ -482,9 +490,9 @@ def code_reward(completions, num_parallel: int = 2, e2b_router_url=None, **kwarg
         raise ValueError("All verification_info must have the same language", verification_info)
 
     if e2b_router_url is not None:
-        router_sandbox = RoutedSandbox(router_url=e2b_router_url)
+        routed_sandbox = RoutedSandbox(router_url=e2b_router_url)
 
-        executions = router_sandbox.run_code(
+        executions = routed_sandbox.run_code(
             scripts=scripts,
             language=language,
             timeout=30,
