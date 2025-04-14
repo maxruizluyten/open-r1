@@ -76,6 +76,9 @@ def run_lighteval_job(
         num_gpus = 8
         tensor_parallel = False
 
+    # FIXME: Hack for broken vLLM / Ray
+    num_gpus=1
+
     cmd = VLLM_SLURM_PREFIX.copy()
     cmd_args = [
         f"--gres=gpu:{num_gpus}",
