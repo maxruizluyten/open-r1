@@ -52,7 +52,7 @@ report_to:
 reward_funcs:
 - binary_code
 - code_format
-e2b_router_url: ip-10-53-95-216:8000
+e2b_router_url: ip-10-53-86-47:8000
 reward_weights:
 - 1.0
 - 0.1
