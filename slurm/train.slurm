@@ -58,9 +58,12 @@ fi
 if [[ "$USE_VLLM" == "true" ]]; then
      TRAIN_NODES=("${NODELIST[@]:0:$((NUM_NODES - 1))}")
      VLLM_NODE=${NODELIST[-1]} # Last node
+     echo "Using vLLM server on node: $VLLM_NODE"
+     echo "Training nodes: ${TRAIN_NODES[*]}"
      TP=$(python scripts/get_tensor_parallel_size.py --model_name $MODEL --revision $REVISION --default_tp $GPUS_PER_NODE)
      WORLD_SIZE=$((WORLD_SIZE - GPUS_PER_NODE))
      NUM_NODES=$((NUM_NODES - 1))
+     echo "Reduced WORLD_SIZE: $WORLD_SIZE and NUM_NODES: $NUM_NODES"
      srun --nodes=1 --ntasks=1 --nodelist=$VLLM_NODE trl vllm-serve --model $MODEL --revision $REVISION --tensor_parallel_size $TP &
      OPTIONAL_ARGS="$OPTIONAL_ARGS --vllm_server_host=$VLLM_NODE"
 fi
@@ -89,3 +92,6 @@ srun --nodes=$NUM_NODES \
       --machine_rank $SLURM_PROCID \
       --rdzv_backend=c10d \
       src/open_r1/$TASK.py --config $CONFIG_FILE $OPTIONAL_ARGS
+
+# wait for any background jobs (vLLM) before exiting
+wait
