@@ -1,4 +1,4 @@
-# Config for 7 + 1 nodes
+# Config for 4 + 1 nodes
 # Model arguments
 model_name_or_path: Qwen/Qwen2.5-32B
 model_revision: main
@@ -64,5 +64,5 @@ save_total_limit: 1
 sync_ref_model: false 
 seed: 42
 temperature: 1.0
-vllm_server_timeout: 240
+vllm_server_timeout: 1200
 warmup_ratio: 0.1
