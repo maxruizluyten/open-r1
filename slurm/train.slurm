@@ -67,6 +67,8 @@ if [[ "$USE_VLLM" == "true" ]]; then
      OPTIONAL_ARGS="$OPTIONAL_ARGS --vllm_server_host=$VLLM_NODE"
 fi
 
+NODELIST=$(IFS=,; echo "${TRAIN_NODES[*]}")
+
 # force crashing on nccl issues like hanging broadcast
 export NCCL_ASYNC_ERROR_HANDLING=1
 # export NCCL_DEBUG=INFO
@@ -86,10 +88,8 @@ export LAUNCHER="HF_HUB_ENABLE_HF_TRANSFER=1 ACCELERATE_LOG_LEVEL=info TRANSFORM
     --num_processes $WORLD_SIZE \
     --main_process_ip $MASTER_ADDR \
     --main_process_port $MASTER_PORT \
-    --machine_rank $SLURM_PROCID \
     --rdzv_backend=c10d \
     --max_restarts 1 \
-    --role \$(hostname -s): \
     --tee 3 \
     "
 # srun error handling:
@@ -100,8 +100,8 @@ SRUN_ARGS=" \
     --kill-on-bad-exit=1 \
     --nodes=$NUM_NODES \
     --ntasks=$NUM_NODES \
-    --nodelist=$TRAIN_NODES
+    --nodelist=$NODELIST
     "
-clear; srun $SRUN_ARGS --jobid $SLURM_JOB_ID bash -c "$LAUNCHER --role \$SLURMD_NODENAME: $CMD" 2>&1
+clear; srun $SRUN_ARGS --jobid $SLURM_JOB_ID bash -c "$LAUNCHER --machine_rank \$SLURM_PROCID --role \$SLURMD_NODENAME: $CMD" 2>&1
 
 echo "END TIME: $(date)"
