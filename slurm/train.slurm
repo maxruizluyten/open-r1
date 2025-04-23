@@ -99,9 +99,9 @@ SRUN_ARGS=" \
     --wait=60 \
     --kill-on-bad-exit=1 \
     --nodes=$NUM_NODES \
-    --ntasks=$NUM_NODES \
+    --ntasks-per-node=1 \
     --nodelist=$NODELIST
     "
-clear; srun $SRUN_ARGS --jobid $SLURM_JOB_ID bash -c "$LAUNCHER --machine_rank \$SLURM_PROCID --role \$SLURMD_NODENAME: $CMD" 2>&1
+clear; srun $SRUN_ARGS --jobid $SLURM_JOB_ID bash -c "$LAUNCHER $CMD" 2>&1
 
 echo "END TIME: $(date)"
