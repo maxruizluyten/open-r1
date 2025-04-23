@@ -24,8 +24,8 @@ use_vllm: true
 do_eval: false
 gradient_accumulation_steps: 16
 gradient_checkpointing: true
-gradient_checkpointing_kwargs:
-  use_reentrant: false
+# gradient_checkpointing_kwargs:
+#   use_reentrant: false
 hub_model_id: open-r1/R1-Zero-Qwen-32B-Math
 hub_model_revision: v00.00
 hub_strategy: every_save
