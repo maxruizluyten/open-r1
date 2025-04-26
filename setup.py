@@ -50,7 +50,7 @@ _deps = [
     "einops>=0.8.0",
     "flake8>=6.0.0",
     "hf_transfer>=0.1.4",
-    "huggingface-hub[cli,hf_xet]>=0.19.2,<1.0",
+    "huggingface-hub[cli,hf_xet]>=0.30.2,<1.0",
     "isort>=5.12.0",
     "langdetect",  # Needed for LightEval's extended tasks
     "latex2sympy2_extended>=1.0.6",
@@ -66,8 +66,8 @@ _deps = [
     "safetensors>=0.3.3",
     "sentencepiece>=0.1.99",
     "torch==2.6.0",
-    "transformers @ git+https://github.com/huggingface/transformers.git@acdbe627e323dbc822f21499fead789b439cf45b", # Fix DeepSpeed x vLLM conflict: https://github.com/huggingface/transformers/pull/37755
-    "trl[vllm] @ git+https://github.com/huggingface/trl.git@guard-deepspeed-imports",  # Data parallel for vLLM: https://github.com/huggingface/trl/pull/3310
+    "transformers @ git+https://github.com/huggingface/transformers.git@acdbe627e323dbc822f21499fead789b439cf45b",  # Fix DeepSpeed x vLLM conflict: https://github.com/huggingface/transformers/pull/37755
+    "trl[vllm] @ git+https://github.com/huggingface/trl.git@1bca49515ecd5b85d16e68c42c76670e252e19f1",  # Fix DeepSpeed x vLLM conflict: https://github.com/huggingface/trl/pull/3351
     "wandb>=0.19.1",
 ]
 
