@@ -66,8 +66,8 @@ _deps = [
     "safetensors>=0.3.3",
     "sentencepiece>=0.1.99",
     "torch==2.6.0",
-    "transformers==4.51.2",
-    "trl[vllm] @ git+https://github.com/huggingface/trl.git@294f35bf3c0043d3ee6b9b5d22385e5736f6ce9e",  # Generate once per batch: https://github.com/huggingface/trl/pull/3283
+    "transformers @ git+https://github.com/huggingface/transformers.git@acdbe627e323dbc822f21499fead789b439cf45b", # Fix DeepSpeed x vLLM conflict: https://github.com/huggingface/transformers/pull/37755
+    "trl[vllm] @ git+https://github.com/huggingface/trl.git@guard-deepspeed-imports",  # Data parallel for vLLM: https://github.com/huggingface/trl/pull/3310
     "wandb>=0.19.1",
 ]
 
