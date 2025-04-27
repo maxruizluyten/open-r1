@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 def main(script_args, training_args, model_args):
     # Set seed for reproducibility
     set_seed(training_args.seed)
-
     ###############
     # Setup logging
     ###############
@@ -104,7 +103,11 @@ def main(script_args, training_args, model_args):
             raise ValueError(f"Dataset Question Field Error: {prompt_column} is not supported.")
 
         prompt.append({"role": "user", "content": example[prompt_column]})
-        return {"prompt": prompt}
+        # Preserve all the original columns (e.g. `solution`, `verification_info`, etc.)
+        # so that downstream reward functions still receive the ground-truth answers.
+        updated_example = example.copy()
+        updated_example["prompt"] = prompt
+        return updated_example
 
     dataset = dataset.map(make_conversation)
 
