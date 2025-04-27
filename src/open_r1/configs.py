@@ -178,3 +178,83 @@ class GRPOScriptArguments(trl.ScriptArguments):
         default=None,
         metadata={"help": "URL for the E2B route. See scripts/e2b_router.py"},
     )
+
+    # ------------------------------------------------------------------
+    #  New fields – make the combined loader the out-of-the-box default
+    # ------------------------------------------------------------------
+
+    dataset_name: str = field(
+        default="open_r1.data.combined_loader",
+        metadata={
+            "help": (
+                "HF dataset repo-id, local directory, or Python path to "
+                "a dataset script.  Defaults to the bundled combined_loader, "
+                "so you can simply pass --dataset_config <key> (gsm8k, math, "
+                "riddlesense, …)."
+            )
+        },
+    )
+
+    dataset_config: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "For multi-config datasets (including the combined loader) "
+                "specify which sub-dataset to load, e.g. 'gsm8k', "
+                "'project_euler', 'countdown'."
+            )
+        },
+    )
+
+    dataset_train_split: str = field(
+        default="train",
+        metadata={"help": "Name of the split to use for training."},
+    )
+
+    dataset_test_split: str = field(
+        default="test",
+        metadata={"help": "Name of the split to use for evaluation."},
+    )
+
+
+@dataclass
+class SFTScriptArguments(trl.ScriptArguments):
+    """
+    Script arguments for the SFT training script.
+    This mirrors many arguments from GRPOScriptArguments for dataset loading.
+    """
+
+    # ------------------------------------------------------------------
+    #  New dataset fields – same defaults as GRPO
+    # ------------------------------------------------------------------
+    dataset_name: str = field(
+        default="open_r1.data.combined_loader",
+        metadata={
+            "help": (
+                "HF dataset repo-id, local directory, or Python path to "
+                "a dataset script.  Defaults to the bundled combined_loader, "
+                "so you can simply pass --dataset_config <key> (gsm8k, math, "
+                "riddlesense, …)."
+            )
+        },
+    )
+    dataset_config: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "For multi-config datasets (including the combined loader) "
+                "specify which sub-dataset to load, e.g. 'gsm8k', "
+                "'project_euler', 'countdown'."
+            )
+        },
+    )
+
+    dataset_train_split: str = field(
+        default="train",
+        metadata={"help": "Name of the split to use for training."},
+    )
+
+    dataset_test_split: str = field(
+        default="test",
+        metadata={"help": "Name of the split to use for evaluation."},
+    )

@@ -698,3 +698,32 @@ If you find this project is useful in your own work, please consider citing as f
     year = {2025}
 }
 ```
+
+## Dataset Loading
+
+The training scripts (`grpo.py`, `sft.py`) now use a combined dataset loader by default, located at `open_r1.data.combined_loader`.
+
+This means you typically only need to specify the desired dataset configuration using the `--dataset_config` flag. The script will automatically use the bundled loader.
+
+**Example:**
+
+```bash
+# Run GRPO training using the GSM8k configuration from the combined loader
+python -m open_r1.grpo --dataset_config gsm8k
+
+# Run SFT using the Countdown configuration
+python -m open_r1.sft --dataset_config countdown
+```
+
+Available configurations within the combined loader include (but are not limited to): `gsm8k`, `math`, `riddlesense`, `project_euler`, `countdown`, `splat`.
+
+If you need to use a different dataset entirely, you can override the default loader by providing `--dataset_name`, `--dataset_config` (if applicable), `--dataset_train_split`, and `--dataset_test_split`:
+
+```bash
+# Example: Use a specific dataset from the Hub
+python -m open_r1.grpo \
+  --dataset_name openai/gsm8k \
+  --dataset_config main \
+  --dataset_train_split train \
+  --dataset_test_split test
+```

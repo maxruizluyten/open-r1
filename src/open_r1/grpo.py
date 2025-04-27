@@ -16,6 +16,11 @@ import logging
 import os
 import sys
 
+# Set cache directories before other imports
+_CACHE_DIR = "/mnt/pdata/mr971/"
+os.environ['HF_HOME'] = os.path.join(_CACHE_DIR, 'hub')
+os.environ['HF_DATASETS_CACHE'] = os.path.join(_CACHE_DIR, 'datasets')
+
 import datasets
 import transformers
 from datasets import load_dataset

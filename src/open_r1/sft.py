@@ -39,17 +39,22 @@ import logging
 import os
 import sys
 
+# Set cache directories before other imports
+_CACHE_DIR = "/mnt/pdata/mr971/"
+os.environ['HF_HOME'] = os.path.join(_CACHE_DIR, 'hub')
+os.environ['HF_DATASETS_CACHE'] = os.path.join(_CACHE_DIR, 'datasets')
+
 import datasets
 import transformers
 from datasets import load_dataset
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
-from open_r1.configs import SFTConfig
+from open_r1.configs import SFTConfig, SFTScriptArguments
 from open_r1.utils import get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
-from trl import ModelConfig, ScriptArguments, SFTTrainer, TrlParser, get_peft_config, setup_chat_format
+from trl import ModelConfig, SFTTrainer, TrlParser, get_peft_config, setup_chat_format
 
 
 logger = logging.getLogger(__name__)
@@ -174,6 +179,6 @@ def main(script_args, training_args, model_args):
 
 
 if __name__ == "__main__":
-    parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
+    parser = TrlParser((SFTScriptArguments, SFTConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
     main(script_args, training_args, model_args)

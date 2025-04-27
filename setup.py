@@ -58,6 +58,7 @@ _deps = [
     "lighteval @ git+https://github.com/huggingface/lighteval.git@bb14995c4eccab5cabd450b1e509c3c898a16921",  # pass@1 for AIME with n=32 samples per prompt
     "math-verify==0.5.2",  # Used for math verification in grpo
     "packaging>=23.0",
+    "pandas>=2.0",  # Added for combined_loader
     "parameterized>=0.9.0",
     "peft>=0.14.0",
     "pytest",
@@ -65,6 +66,7 @@ _deps = [
     "ruff>=0.9.0",
     "safetensors>=0.3.3",
     "sentencepiece>=0.1.99",
+    "sympy>=1.12",  # Added for combined_loader (Countdown)
     "torch==2.6.0",
     "transformers @ git+https://github.com/huggingface/transformers.git@acdbe627e323dbc822f21499fead789b439cf45b",  # Fix DeepSpeed x vLLM conflict: https://github.com/huggingface/transformers/pull/37755
     "trl[vllm] @ git+https://github.com/huggingface/trl.git@1bca49515ecd5b85d16e68c42c76670e252e19f1",  # Fix DeepSpeed x vLLM conflict: https://github.com/huggingface/trl/pull/3351
@@ -106,8 +108,10 @@ install_requires = [
     deps["math-verify"],
     deps["liger-kernel"],
     deps["packaging"],  # utilities from PyPA to e.g., compare versions
+    deps["pandas"],
     deps["safetensors"],
     deps["sentencepiece"],
+    deps["sympy"],
     deps["transformers"],
     deps["trl"],
     deps["wandb"],

@@ -12,6 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
+# Set cache directories before other imports
+_CACHE_DIR = "/mnt/pdata/mr971/"
+os.environ['HF_HOME'] = os.path.join(_CACHE_DIR, 'hub')
+os.environ['HF_DATASETS_CACHE'] = os.path.join(_CACHE_DIR, 'datasets')
+
 from typing import Optional
 
 from distilabel.llms import OpenAILLM
