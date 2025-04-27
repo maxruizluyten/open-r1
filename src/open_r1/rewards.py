@@ -50,7 +50,11 @@ def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str]
             extraction_mode="first_match",
         )
         if len(gold_parsed) != 0:
-            # We require the answer to be provided in correct latex (no malformed operators)
+            # Prefer the strict LaTeX-only parse to encourage properly boxed answers,
+            # but fall back to the default parser so that plain numbers like "72" are
+            # still recognised.  Without this fallback GSM8K-style answers always score
+            # zero.
+
             answer_parsed = parse(
                 content,
                 extraction_config=[
@@ -63,13 +67,17 @@ def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str]
                             boxed="all",
                             units=True,
                         ),
-                        # Ensures that boxed is tried first
                         boxed_match_priority=0,
                         try_extract_without_anchor=False,
                     )
                 ],
                 extraction_mode="first_match",
             )
+
+            if len(answer_parsed) == 0:
+                # Relax the constraints: accept anything the default parser can extract.
+                answer_parsed = parse(content, extraction_mode="first_match")
+
             # Compute binary rewards if verifiable, `None` otherwise to skip this example
             try:
                 reward = float(verify(gold_parsed, answer_parsed))
@@ -257,6 +265,10 @@ def get_cosine_scaled_reward(
                 ],
                 extraction_mode="first_match",
             )
+
+            if len(answer_parsed) == 0:
+                # Relax the constraints: accept anything the default parser can extract.
+                answer_parsed = parse(content, extraction_mode="first_match")
 
             is_correct = verify(answer_parsed, gold_parsed)
             gen_len = len(content)
