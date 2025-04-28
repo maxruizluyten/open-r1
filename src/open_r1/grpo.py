@@ -18,8 +18,26 @@ import sys
 
 # Set cache directories before other imports
 _CACHE_DIR = "/mnt/pdata/mr971/"
+# Ensure cache directories exist
+os.makedirs(os.path.join(_CACHE_DIR, "hub"), exist_ok=True)
+os.makedirs(os.path.join(_CACHE_DIR, "datasets"), exist_ok=True)
+os.environ.setdefault(
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "allocator:cudaMallocAsync,garbage_collection_threshold:0.6,max_split_size_mb:128",
+)
 os.environ['HF_HOME'] = os.path.join(_CACHE_DIR, 'hub')
 os.environ['HF_DATASETS_CACHE'] = os.path.join(_CACHE_DIR, 'datasets')
+
+import torch  # Import torch after setting env vars
+
+# Check CUDA capability for async allocator support
+if torch.cuda.is_available():
+    major, _ = torch.cuda.get_device_capability()
+    if major < 8:  # Needs SM 8.0+ (Ampere)
+        raise RuntimeError(
+            "Current GPU setup does not support cudaMallocAsync (compute capability < 8.0). "
+            "Remove PYTORCH_CUDA_ALLOC_CONF environment variable or use a compatible GPU."
+        )
 
 import datasets
 import transformers
