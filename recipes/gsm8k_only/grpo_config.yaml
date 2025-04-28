@@ -26,7 +26,7 @@ save_strategy: "epoch"
 
 # ── misc ──────────────────────────────────────────────────────
 seed: 42
-output_dir: /mnt/pdata/mr971/gsm8k_only
+output_dir: /mnt/pdata/mr971/gsm8k_only_h100_2
 report_to: ["tensorboard", "wandb"]
 
 # (optional but typical)
