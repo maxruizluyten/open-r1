@@ -39,7 +39,14 @@ import torch
 from datasets import load_dataset, Dataset
 from tqdm import tqdm
 
+# ── W&B additions ───────────────────────────────────────────────────────
+import os
+import wandb
+# -----------------------------------------------------------------------
+
 # ── open‑r1 imports (reuse!) ────────────────────────────────────────────
+from trl import ModelConfig
+from open_r1.configs import SFTConfig # Need a dummy training config
 from open_r1.utils import get_model, get_tokenizer
 from open_r1.rewards import accuracy_reward  # robust LaTeX / boxed parser
 
@@ -49,23 +56,23 @@ from open_r1.rewards import accuracy_reward  # robust LaTeX / boxed parser
 
 TASKS: dict[str, tuple[str, str, str]] = {
     # in-distribution
-    "gsm8k"            : ("open_r1.data.combined_loader", "gsm8k",             "test"),
+    "gsm8k"            : ("src/open_r1/data/combined_loader.py", "gsm8k",             "train"),
 
     # out-of-distribution
-    "advent_of_code"   : ("open_r1.data.combined_loader", "advent_of_code",    "train"),
-    "bespoke_stratos"  : ("open_r1.data.combined_loader", "bespoke_stratos",   "train"),
-    "brainteaser"      : ("open_r1.data.combined_loader", "brainteaser",       "train[:1000]"),
-    "connections"      : ("open_r1.data.combined_loader", "connections",       "train"),
-    "countdown"        : ("open_r1.data.combined_loader", "countdown",         "train"),
-    "humaneval"        : ("open_r1.data.combined_loader", "humaneval",         "test"),
-    "logiqa"           : ("open_r1.data.combined_loader", "logiqa",            "train"),
-    "macgyver"         : ("open_r1.data.combined_loader", "macgyver",          "train"),
-    "math"             : ("open_r1.data.combined_loader", "math",              "test"),
-    "multiply"         : ("open_r1.data.combined_loader", "multiply",          "train[:1000]"),
-    "numina_math_tir"  : ("open_r1.data.combined_loader", "numina_math_tir",   "train"),
-    "project_euler"    : ("open_r1.data.combined_loader", "project_euler",     "train"),
-    "riddlesense"      : ("open_r1.data.combined_loader", "riddlesense",       "validation"),
-    "splat"            : ("open_r1.data.combined_loader", "splat",             "train"),
+    "advent_of_code"   : ("src/open_r1/data/combined_loader.py", "advent_of_code",    "train"),
+    "bespoke_stratos"  : ("src/open_r1/data/combined_loader.py", "bespoke_stratos",   "train"),
+    "brainteaser"      : ("src/open_r1/data/combined_loader.py", "brainteaser",       "train[:1000]"),
+    "connections"      : ("src/open_r1/data/combined_loader.py", "connections",       "train"),
+    "countdown"        : ("src/open_r1/data/combined_loader.py", "countdown",         "train"),
+    "humaneval"        : ("src/open_r1/data/combined_loader.py", "humaneval",         "test"),
+    "logiqa"           : ("src/open_r1/data/combined_loader.py", "logiqa",            "train"),
+    "macgyver"         : ("src/open_r1/data/combined_loader.py", "macgyver",          "train"),
+    "math"             : ("src/open_r1/data/combined_loader.py", "math",              "test"),
+    "multiply"         : ("src/open_r1/data/combined_loader.py", "multiply",          "train[:1000]"),
+    "numina_math_tir"  : ("src/open_r1/data/combined_loader.py", "numina_math_tir",   "train"),
+    "project_euler"    : ("src/open_r1/data/combined_loader.py", "project_euler",     "train"),
+    "riddlesense"      : ("src/open_r1/data/combined_loader.py", "riddlesense",       "validation"),
+    "splat"            : ("src/open_r1/data/combined_loader.py", "splat",             "train"),
 }
 
 
@@ -115,13 +122,30 @@ def accuracy_for_dataset(model, tokenizer, dataset: Dataset, *, device: torch.de
 
     with torch.no_grad():
         for batch in _batchify(dataset, batch_size):
-            prompts = [ex["prompt"] + "\n<answer>\n" for ex in batch]
+            # Correctly access prompts and solutions from the batch dictionary
+            num_examples_in_batch = len(batch["prompt"])  # Get batch size from a column
+            prompts = [batch["prompt"][i] + "\n<answer>\n" for i in range(num_examples_in_batch)]
             inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(device)
-            outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.0)
+            # Use do_sample=False for greedy decoding when temperature is effectively 0
+            outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=None, do_sample=False)
             decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
-            completions = [[{"content": txt}] for txt in decoded]
-            solutions = [str(ex["solution"]) for ex in batch]
+            # Completions need to be wrapped correctly for the reward function
+            # Extract the generated text *after* the prompt+answer marker
+            generated_texts = []
+            for i in range(num_examples_in_batch):
+                # Find the end of the input prompt within the decoded output
+                prompt_end_index = decoded[i].find("\n<answer>\n")
+                if prompt_end_index != -1:
+                    # Extract text after the marker
+                    start_index = prompt_end_index + len("\n<answer>\n")
+                    generated_texts.append(decoded[i][start_index:].strip())
+                else:
+                    # Fallback if marker isn't found (shouldn't happen ideally)
+                    generated_texts.append(decoded[i].strip()) 
+
+            completions = [[{"content": txt}] for txt in generated_texts]
+            solutions = [str(batch["solution"][i]) for i in range(num_examples_in_batch)] # Correct solution access
 
             rewards = accuracy_reward(completions, solutions)
 
@@ -145,6 +169,21 @@ def evaluate_checkpoints(exp_dir: Path, save_dir: Path, *, device: str, batch_si
     exp_dir = exp_dir.resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── W&B setup ───────────────────────────────────────────────────────
+    wandb_run = wandb.init(
+        project=os.getenv("WANDB_PROJECT", "open_r1_eval"),
+        name=exp_dir.name,
+        config=dict(
+            exp_dir=str(exp_dir),
+            save_dir=str(save_dir),
+            device=str(device),
+            batch_size=batch_size,
+            max_new_tokens=max_new_tokens,
+            tasks=list(TASKS.keys()),
+        ),
+    )
+    # -------------------------------------------------------------------
+
     # Discover checkpoints
     checkpoint_dirs = sorted(
         [p for p in exp_dir.glob("checkpoint-*") if p.is_dir()],
@@ -159,8 +198,13 @@ def evaluate_checkpoints(exp_dir: Path, save_dir: Path, *, device: str, batch_si
         step = int(re.search(r"checkpoint-(\d+)", ckpt.name).group(1))
         print(f"\n▶ Evaluating step {step} …")
 
-        tokenizer = get_tokenizer(None, None, model_name_or_path=str(ckpt))
-        model = get_model(None, None, model_name_or_path=str(ckpt)).to(device)
+        # Instantiate dummy configs needed by get_tokenizer/get_model
+        model_conf = ModelConfig(model_name_or_path=str(ckpt))
+        # Minimal training config, chat_template=None is important
+        train_conf = SFTConfig(output_dir="", chat_template=None) 
+
+        tokenizer = get_tokenizer(model_conf, train_conf)
+        model = get_model(model_conf, train_conf).to(device)
 
         row = {"step": step}
         for task, (dpath, cfg, split) in TASKS.items():
@@ -169,6 +213,10 @@ def evaluate_checkpoints(exp_dir: Path, save_dir: Path, *, device: str, batch_si
             row[task] = acc
             print(f"  {task:12s}: {acc:.3f}")
         records.append(row)
+
+        # ── W&B per-checkpoint metrics ──────────────────────────────────
+        wandb.log({**{f"{k}_acc": v for k, v in row.items() if k != "step"}, "step": step})
+        # ----------------------------------------------------------------
 
         # free GPU mem between checkpoints
         del model; torch.cuda.empty_cache()
@@ -196,6 +244,9 @@ def evaluate_checkpoints(exp_dir: Path, save_dir: Path, *, device: str, batch_si
     ax.legend(frameon=False, loc="best")
     fig.tight_layout()
     fig.savefig(save_dir / "learning_curve.pdf")
+    # ── W&B figure log ─────────────────────────────────────────────────-
+    wandb.log({"learning_curve": wandb.Image(fig)})
+    # -------------------------------------------------------------------
     plt.close(fig)
 
     # 2. Correlation heat‑map -------------------------------------------
@@ -212,6 +263,9 @@ def evaluate_checkpoints(exp_dir: Path, save_dir: Path, *, device: str, batch_si
     ax.set_title("Task correlations")
     fig.tight_layout()
     fig.savefig(save_dir / "task_correlation_heatmap.pdf")
+    # ── W&B figure log ─────────────────────────────────────────────────-
+    wandb.log({"task_correlation_heatmap": wandb.Image(fig)})
+    # -------------------------------------------------------------------
     plt.close(fig)
 
     # 3. Scatter matrix --------------------------------------------------
@@ -237,9 +291,16 @@ def evaluate_checkpoints(exp_dir: Path, save_dir: Path, *, device: str, batch_si
     fig.suptitle("Pair‑wise checkpoint accuracies", y=0.92)
     fig.tight_layout()
     fig.savefig(save_dir / "scatter_matrix.pdf")
+    # ── W&B figure log ─────────────────────────────────────────────────-
+    wandb.log({"scatter_matrix": wandb.Image(fig)})
+    # -------------------------------------------------------------------
     plt.close(fig)
 
     print("All plots saved to", save_dir)
+
+    # ── W&B finish ─────────────────────────────────────────────────────-
+    wandb_run.finish()
+    # -------------------------------------------------------------------
 
 # ----------------------------------------------------------------------
 #  Entry‑point
@@ -251,7 +312,7 @@ if __name__ == "__main__":
     parser.add_argument("--save-dir", type=Path, required=True, help="Where to store CSV / JSON and PDF figs")
     parser.add_argument("--device", type=str, default="cuda", help="Torch device e.g. 'cuda', 'cuda:0', 'cpu'")
     parser.add_argument("--batch-size", type=int, default=8, help="Generation batch size")
-    parser.add_argument("--max-new-tokens", type=int, default=32, help="Max tokens to generate per example")
+    parser.add_argument("--max-new-tokens", type=int, default=256, help="Max tokens to generate per example")
     args = parser.parse_args()
 
     torch_device = torch.device(args.device)
