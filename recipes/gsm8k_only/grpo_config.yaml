@@ -3,12 +3,14 @@ model_name_or_path: /mnt/pdata/mr971/models/llama3-8b-instruct
 lora_r: 64
 lora_alpha: 128
 lora_dropout: 0.05
+torch_dtype: bfloat16
+attn_implementation: flash_attention_2
 
 # ── data ──────────────────────────────────────────────────────
 dataset_name: "/home/azureuser/creativity/open-r1/src/open_r1/data/combined_loader.py"
 dataset_config: gsm8k
 dataset_train_split: train
-dataset_test_split: test         # fine – GSM8K exposes “test”
+dataset_test_split: test         # fine – GSM8K exposes "test"
 
 # ── RL hyper-params ───────────────────────────────────────────
 num_train_epochs: 3
@@ -18,7 +20,6 @@ learning_rate: 5.0e-6
 reward_funcs:                        # YAML list syntax
   - accuracy
   - format
-  - tag_count
 evaluation_strategy: "no"            # skip in-training eval
 logging_steps: 50
 save_strategy: "epoch"
@@ -26,7 +27,7 @@ save_strategy: "epoch"
 # ── misc ──────────────────────────────────────────────────────
 seed: 42
 output_dir: /mnt/pdata/mr971/gsm8k_only
-report_to: ["tensorboard"]
+report_to: ["tensorboard", "wandb"]
 
 # (optional but typical)
-bf16: true                           # or fp16: true, depending on HW
+bf16: true
